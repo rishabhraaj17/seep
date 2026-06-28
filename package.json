@@ -1,0 +1,14 @@
+{
+  "name": "seep",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Full-stack Indian Seep (Sweep) Card Game",
+  "scripts": {
+    "dev": "npm run dev --workspace=@seep/server & npm run dev --workspace=@seep/client",
+    "build": "npm run build --workspaces",
+    "preview": "npm run preview --workspace=@seep/client"
+  },
+  "workspaces": [
+    "packages/*"
+  ]
+}

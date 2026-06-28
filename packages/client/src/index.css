@@ -1,0 +1,38 @@
+/* Global Styles */
+@import "tailwindcss";
+
+@layer base {
+  body {
+    @apply bg-green-800 min-h-screen text-white;
+    font-family: system-ui, sans-serif;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  /* Ensure proper touch targets on mobile */
+  button, input {
+    min-height: 44px;
+  }
+}
+
+@layer utilities {
+  .card-shadow {
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3), 0 2px 4px -1px rgba(0, 0, 0, 0.2);
+  }
+
+  .touch-target {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}
+
+/* Mobile responsive adjustments */
+@media (max-width: 640px) {
+  .mobile-card-arch {
+    padding-bottom: 4rem;
+  }
+
+  .mobile-action-bar {
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+}

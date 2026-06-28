@@ -1,0 +1,18 @@
+# Build stage
+FROM node:20-alpine AS builder
+WORKDIR /app/packages/server
+COPY packages/server/package*.json ./
+RUN npm install
+COPY packages/server/src ./src
+COPY packages/server/tsconfig.json ./
+RUN npx tsc
+
+# Runtime stage
+FROM node:20-alpine
+WORKDIR /app
+ENV NODE_ENV=production
+ENV PORT=3000
+COPY --from=builder /app/packages/server/dist ./packages/server/dist
+COPY --from=builder /app/packages/server/node_modules ./node_modules
+EXPOSE 3000
+CMD ["node", "packages/server/dist/index.js"]
