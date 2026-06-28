@@ -63,13 +63,13 @@ export default function LobbyScreen({ socket, userId, onJoinGame, onLobbyCreated
 
   const createLobby = useCallback(() => {
     setError('');
-    socket.emit('create-lobby', { userId, isPrivate });
+    socket.emit('create-lobby', { isPrivate });
   }, [socket, userId, isPrivate]);
 
   const joinLobby = useCallback(() => {
     if (lobbyCode) {
       setError('');
-      socket.emit('join-lobby', { lobbyCode, userId });
+      socket.emit('join-lobby', { lobbyCode });
       socket.emit('get-lobby-state', { lobbyCode });
     }
   }, [socket, lobbyCode, userId]);
@@ -82,7 +82,7 @@ export default function LobbyScreen({ socket, userId, onJoinGame, onLobbyCreated
 
   const leaveLobby = useCallback(() => {
     if (lobbyCode) {
-      socket.emit('leave-lobby', { lobbyCode, userId });
+      socket.emit('leave-lobby', { lobbyCode });
     }
     setLobbyCode('');
     setPlayers([]);

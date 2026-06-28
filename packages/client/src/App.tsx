@@ -11,12 +11,12 @@ function App() {
   const [screen, setScreen] = useState<Screen>('login');
   const [socket, setSocket] = useState<Socket | null>(null);
   const [userId, setUserId] = useState<string>('');
-  const [_token, setToken] = useState<string>('');
+  const [token, setToken] = useState<string>('');
 
   useEffect(() => {
-    if (!socket && screen !== 'login') {
+    if (!socket && screen !== 'login' && token) {
       const serverUrl = import.meta.env.VITE_SERVER_URL || 'http://localhost:3002';
-      const s = io(serverUrl);
+      const s = io(serverUrl, { auth: { token } });
       setSocket(s);
 
       s.on('connect', () => {
@@ -31,7 +31,7 @@ function App() {
         s.close();
       };
     }
-  }, [screen, socket]);
+  }, [screen, socket, token]);
 
   const handleLogin = (id: string, authToken: string) => {
     setUserId(id);

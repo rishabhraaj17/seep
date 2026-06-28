@@ -1,6 +1,13 @@
 import jwt from 'jsonwebtoken';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'development-secret-key-change-in-production';
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) {
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('JWT_SECRET environment variable must be set in production');
+  }
+  console.warn('[WARNING] JWT_SECRET not set — using insecure dev default. Never run this in production.');
+}
+const EFFECTIVE_JWT_SECRET = JWT_SECRET || '__dev_only_insecure_secret__';
 const JWT_EXPIRES_IN = '7d';
 
 export type UserRole = 'admin' | 'player' | 'spectator';
@@ -18,14 +25,14 @@ export function generateToken(payload: TokenPayload): string {
       username: payload.username,
       role: payload.role,
     },
-    JWT_SECRET,
+    EFFECTIVE_JWT_SECRET,
     { expiresIn: JWT_EXPIRES_IN }
   );
 }
 
 export function verifyToken(token: string): TokenPayload | null {
   try {
-    const decoded = jwt.verify(token, JWT_SECRET) as jwt.JwtPayload;
+    const decoded = jwt.verify(token, EFFECTIVE_JWT_SECRET) as jwt.JwtPayload;
     return {
       userId: decoded.userId as string,
       username: decoded.username as string,

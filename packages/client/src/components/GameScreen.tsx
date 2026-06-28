@@ -119,7 +119,6 @@ export default function GameScreen({ socket, userId }: GameScreenProps) {
         action: 'CAPTURE',
         lobbyCode: gameState?.lobbyCode,
         payload: {
-          playerId: userId,
           card: selectedCard,
           targetCards: capturedCards,
         },
@@ -135,7 +134,6 @@ export default function GameScreen({ socket, userId }: GameScreenProps) {
         action: 'BUILD_HOUSE',
         lobbyCode: gameState?.lobbyCode,
         payload: {
-          playerId: userId,
           card: selectedCard,
           houseValue,
         },
@@ -151,7 +149,6 @@ export default function GameScreen({ socket, userId }: GameScreenProps) {
         action: 'THROW',
         lobbyCode: gameState?.lobbyCode,
         payload: {
-          playerId: userId,
           card: selectedCard,
         },
       });

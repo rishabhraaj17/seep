@@ -3,6 +3,7 @@ import http from 'http';
 import { Server as SocketIOServer, Socket } from 'socket.io';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import { randomBytes } from 'crypto';
 import authRoutes from './auth/routes.js';
 import { generateToken, verifyToken, hasPermission } from './auth/jwt.js';
 
@@ -126,16 +127,29 @@ const socketToLobby = new Map<string, string>();
 
 dotenv.config();
 
+const ALLOWED_ORIGIN = process.env.CLIENT_ORIGIN || 'http://localhost:5173';
+
 const app = express();
 const server = http.createServer(app);
 const io = new SocketIOServer(server, {
   cors: {
-    origin: '*',
+    origin: ALLOWED_ORIGIN,
     methods: ['GET', 'POST'],
   },
 });
 
-app.use(cors());
+// Verify JWT on Socket.IO handshake — populates socket.data.userId / socket.data.role
+io.use((socket, next) => {
+  const token = socket.handshake.auth?.token as string | undefined;
+  if (!token) return next(new Error('Authentication required'));
+  const payload = verifyToken(token);
+  if (!payload) return next(new Error('Invalid or expired token'));
+  socket.data.userId = payload.userId;
+  socket.data.role = payload.role;
+  next();
+});
+
+app.use(cors({ origin: ALLOWED_ORIGIN }));
 app.use(express.json());
 
 // Socket.io connection handling
@@ -143,8 +157,9 @@ io.on('connection', (socket: Socket) => {
   console.log(`Player connected: ${socket.id}`);
 
   // Create lobby
-  socket.on('create-lobby', ({ userId, isPrivate }: { userId: string; isPrivate: boolean }) => {
-    const code = Math.random().toString(36).substring(2, 8).toUpperCase();
+  socket.on('create-lobby', ({ isPrivate }: { isPrivate: boolean }) => {
+    const userId = socket.data.userId as string;
+    const code = randomBytes(3).toString('hex').toUpperCase();
 
     const lobby: LobbyState = {
       code,
@@ -163,7 +178,8 @@ io.on('connection', (socket: Socket) => {
   });
 
   // Join lobby
-  socket.on('join-lobby', ({ lobbyCode, userId }: { lobbyCode: string; userId: string }) => {
+  socket.on('join-lobby', ({ lobbyCode }: { lobbyCode: string }) => {
+    const userId = socket.data.userId as string;
     const lobby = lobbies.get(lobbyCode);
 
     if (!lobby) {
@@ -173,6 +189,11 @@ io.on('connection', (socket: Socket) => {
 
     if (lobby.players.length >= 4) {
       socket.emit('error-message', { message: 'Lobby is full' });
+      return;
+    }
+
+    if (lobby.players.some(p => p.id === userId)) {
+      socket.emit('error-message', { message: 'Already in lobby' });
       return;
     }
 
@@ -192,8 +213,10 @@ io.on('connection', (socket: Socket) => {
 
   // Start game
   socket.on('start-game', ({ lobbyCode }: { lobbyCode: string }) => {
+    const userId = socket.data.userId as string;
     const lobby = lobbies.get(lobbyCode);
-    if (lobby && lobby.players.length === 4) {
+    // Only a player already in the lobby can start it
+    if (lobby && lobby.players.length === 4 && lobby.players.some(p => p.id === userId)) {
       lobby.status = 'bidding';
 
       // Deal cards
@@ -243,37 +266,59 @@ io.on('connection', (socket: Socket) => {
   });
 
   // Place bid
-  socket.on('place-bid', ({ lobbyCode, playerId, bid, cardId }: {
+  socket.on('place-bid', ({ lobbyCode, bid, cardId }: {
     lobbyCode: string;
-    playerId: string;
     bid: number;
     cardId: string;
   }) => {
+    const playerId = socket.data.userId as string;
     const lobby = lobbies.get(lobbyCode);
-    if (lobby?.gameState && lobby.hands) {
-      const hand = lobby.hands.get(playerId) || [];
-      const hasCard = hand.some(c => c.id === cardId);
+    if (!lobby?.gameState || !lobby.hands) return;
 
-      if (!hasCard) {
-        socket.emit('error-message', { message: 'Invalid bid card' });
-        return;
-      }
-
-      lobby.gameState.bid = { playerId, value: bid, fulfilled: false };
-      lobby.gameState.gamePhase = 'playing';
-      io.to(lobbyCode).emit('bid-placed', { bid, playerId });
-      io.to(lobbyCode).emit('game-state', lobby.gameState);
+    // Only the bidding player (index 0) can place a bid
+    const biddingPlayer = lobby.players[0];
+    if (biddingPlayer?.id !== playerId) {
+      socket.emit('error-message', { message: 'Not your turn to bid' });
+      return;
     }
+
+    const hand = lobby.hands.get(playerId) || [];
+    const hasCard = hand.some(c => c.id === cardId);
+
+    if (!hasCard) {
+      socket.emit('error-message', { message: 'Invalid bid card' });
+      return;
+    }
+
+    lobby.gameState.bid = { playerId, value: bid, fulfilled: false };
+    lobby.gameState.gamePhase = 'playing';
+    io.to(lobbyCode).emit('bid-placed', { bid, playerId });
+    io.to(lobbyCode).emit('game-state', lobby.gameState);
   });
 
   // Handle game actions
-  socket.on('game-action', (data: { lobbyCode: string; action: string; payload: any }) => {
+  socket.on('game-action', (data: { lobbyCode: string; action: string; payload: { card: Card; targetCards: Card[]; houseValue?: number } }) => {
+    const playerId = socket.data.userId as string;
     const lobby = lobbies.get(data.lobbyCode);
     if (!lobby?.gameState || !lobby.hands) return;
 
     const { action, payload } = data;
-    const { playerId, card, targetCards, houseValue } = payload;
+    const { card, targetCards } = payload;
     const lobbyCode = data.lobbyCode;
+
+    // Enforce turn order
+    const currentPlayer = lobby.players[lobby.gameState.currentPlayerIndex];
+    if (currentPlayer?.id !== playerId) {
+      socket.emit('error-message', { message: 'Not your turn' });
+      return;
+    }
+
+    // Verify the played card is actually in the player's hand
+    const hand = lobby.hands.get(playerId) || [];
+    if (!hand.some(c => c.id === card.id)) {
+      socket.emit('error-message', { message: 'Card not in hand' });
+      return;
+    }
 
     // Valid capture check
     if (action === 'CAPTURE') {
@@ -281,10 +326,6 @@ io.on('connection', (socket: Socket) => {
       const canCapture = canSumTo(cardValue, targetCards);
 
       if (canCapture) {
-        // Check for Seep (sweep all cards on floor)
-        const allLooseCards = lobby.gameState.floor.filter(c => true); // All loose for now
-        const totalOnFloor = allLooseCards.reduce((acc, c) => acc + getCardNumericValue(c), 0);
-
         // Remove captured cards from floor
         targetCards.forEach((c: Card) => {
           lobby.gameState!.floor = lobby.gameState!.floor.filter(fc => fc.id !== c.id);
@@ -297,16 +338,16 @@ io.on('connection', (socket: Socket) => {
           io.to(lobbyCode).emit('seep-executed', { playerId });
         }
 
-        // Remove played card from hand
-        const hand = lobby.hands.get(playerId) || [];
+        // Remove played card from hand and advance turn
         lobby.hands.set(playerId, hand.filter(c => c.id !== card.id));
+        lobby.gameState.currentPlayerIndex = (lobby.gameState.currentPlayerIndex + 1) % 4;
 
         io.to(lobbyCode).emit('game-state', lobby.gameState);
       }
     }
 
-    // Send to other players
-    socket.to(lobbyCode).emit('game-updated', data);
+    // Relay action to other players
+    socket.to(lobbyCode).emit('game-updated', { ...data, playerId });
   });
 
   // Disconnect
