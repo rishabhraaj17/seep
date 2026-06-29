@@ -7,12 +7,13 @@ import { randomBytes } from 'crypto';
 import authRoutes from './auth/routes.js';
 import { generateToken, verifyToken, hasPermission } from './auth/jwt.js';
 import { initDatabase, pool } from './db.js';
+import { chooseBestBotMove } from './bot.js';
 
 // Game types
 type Suit = 'hearts' | 'diamonds' | 'clubs' | 'spades';
 type Rank = '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' | '10' | 'J' | 'Q' | 'K' | 'A';
 
-interface Card {
+export interface Card {
   id: string;
   suit: Suit;
   rank: Rank;
@@ -27,7 +28,7 @@ interface House {
   createdBy: string;
 }
 
-interface GameState {
+export interface GameState {
   lobbyCode: string;
   floor: Card[];
   houses: House[];
@@ -56,7 +57,7 @@ interface LobbyState {
 }
 
 // Helper functions
-function getPointValue(card: Card): number {
+export function getPointValue(card: Card): number {
   if (card.suit === 'spades') {
     return getCardNumericValue(card);
   }
@@ -98,7 +99,7 @@ const rankToValue: Record<string, number> = {
 };
 
 // Card value for capture/sum checks
-function getCardNumericValue(card: Card): number {
+export function getCardNumericValue(card: Card): number {
   if (card.rank === 'A') return 1;
   if (card.rank === 'J') return 11;
   if (card.rank === 'Q') return 12;
@@ -471,7 +472,7 @@ async function checkAndTriggerBotTurn(lobbyCode: string) {
         let playAction = 'THROW';
         let selectedCard = visibleHand[0];
         let targetCards: Card[] = [];
-        let houseValue: 9 | 10 | 11 | 12 | 13 | 14 | undefined = undefined;
+        let houseValue: number | undefined = undefined;
 
         // Restriction: Restrict caller's first action to the called house value
         const isCallerFirstTurn = (playerIndex === 0 && !hasCompletedFirstTurn);
@@ -495,32 +496,17 @@ async function checkAndTriggerBotTurn(lobbyCode: string) {
           }
         } else {
           // Regular bot logic
-          // 1. Try to capture a matching house
-          let houseCaptured = false;
-          for (const card of visibleHand) {
-            const cardVal = getCardNumericValue(card);
-            const matchingHouse = currentLobby.gameState.houses.find(h => h.value === cardVal);
-            if (matchingHouse) {
-              playAction = 'CAPTURE';
-              selectedCard = card;
-              targetCards = findCapturableCardsForBot(card, currentLobby.gameState.floor);
-              houseCaptured = true;
-              break;
-            }
-          }
-
-          if (!houseCaptured) {
-            // 2. Try to capture loose cards
-            for (const card of visibleHand) {
-              const capturable = findCapturableCardsForBot(card, currentLobby.gameState.floor);
-              if (capturable.length > 0) {
-                playAction = 'CAPTURE';
-                selectedCard = card;
-                targetCards = capturable;
-                break;
-              }
-            }
-          }
+          const botMove = chooseBestBotMove(
+            currentPlayer.id,
+            visibleHand,
+            currentLobby.gameState.floor,
+            currentLobby.gameState,
+            currentPlayer.team as 1 | 2
+          );
+          playAction = botMove.action;
+          selectedCard = botMove.card;
+          targetCards = botMove.targetCards;
+          houseValue = botMove.houseValue;
         }
 
         const team = currentPlayer.team === 1 ? 'team1' : 'team2';
@@ -554,11 +540,14 @@ async function checkAndTriggerBotTurn(lobbyCode: string) {
         } else if (playAction === 'BUILD_HOUSE') {
           const newHouse = {
             id: `house-${Date.now()}`,
-            cards: [selectedCard],
-            value: houseValue!,
+            cards: [selectedCard, ...targetCards],
+            value: houseValue! as 9 | 10 | 11 | 12 | 13 | 14,
             isPukta: houseValue! >= 13,
             createdBy: currentPlayer.id,
           };
+          targetCards.forEach(c => {
+            currentLobby.gameState!.floor = currentLobby.gameState!.floor.filter(fc => fc.id !== c.id);
+          });
           currentLobby.gameState.houses.push(newHouse);
         } else {
           currentLobby.gameState.floor.push(selectedCard);
