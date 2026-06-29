@@ -1,6 +1,25 @@
 version: '3.9'
 
 services:
+  # Database
+  seep-db:
+    image: postgres:15-alpine
+    container_name: seep-db
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=seep_user
+      - POSTGRES_PASSWORD=seep_pass
+      - POSTGRES_DB=seep_db
+    volumes:
+      - seep_pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U seep_user -d seep_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   # Backend server
   seep-server:
     build:
@@ -13,6 +32,10 @@ services:
       - NODE_ENV=production
       - JWT_SECRET=${JWT_SECRET:-seep-secret-key-change-in-production}
       - PORT=3000
+      - DATABASE_URL=postgres://seep_user:seep_pass@seep-db:5432/seep_db
+    depends_on:
+      seep-db:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3000/health"]
@@ -32,6 +55,9 @@ services:
     depends_on:
       seep-server:
         condition: service_healthy
+
+volumes:
+  seep_pgdata:
 
 networks:
   default:

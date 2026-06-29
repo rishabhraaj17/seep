@@ -6,6 +6,7 @@ import dotenv from 'dotenv';
 import { randomBytes } from 'crypto';
 import authRoutes from './auth/routes.js';
 import { generateToken, verifyToken, hasPermission } from './auth/jwt.js';
+import { initDatabase } from './db.js';
 
 // Game types
 type Suit = 'hearts' | 'diamonds' | 'clubs' | 'spades';
@@ -121,6 +122,196 @@ function calculatePoints(cards: Card[]): number {
   return cards.reduce((sum, card) => sum + getPointValue(card), 0);
 }
 
+// Bot helper to find capturable cards
+function findCapturableCardsForBot(card: Card, floor: Card[]): Card[] {
+  const cardValue = getCardNumericValue(card);
+  const capturable: Card[] = [];
+
+  // Single card match
+  for (const floorCard of floor) {
+    if (getCardNumericValue(floorCard) === cardValue) {
+      capturable.push(floorCard);
+      return capturable;
+    }
+  }
+
+  // Sum combination check
+  for (let i = 0; i < floor.length; i++) {
+    for (let j = i + 1; j < floor.length; j++) {
+      if (getCardNumericValue(floor[i]) + getCardNumericValue(floor[j]) === cardValue) {
+        capturable.push(floor[i], floor[j]);
+        return capturable;
+      }
+    }
+  }
+
+  return [];
+}
+
+// Check if round should end and update scores
+function checkRoundEnd(lobby: LobbyState) {
+  if (!lobby.hands || !lobby.gameState) return;
+
+  // Check if all players have 0 cards in hand
+  let allEmpty = true;
+  for (const [_, hand] of lobby.hands.entries()) {
+    if (hand.length > 0) {
+      allEmpty = false;
+      break;
+    }
+  }
+
+  if (allEmpty) {
+    const team1Captures = lobby.gameState.capturedCards.team1;
+    const team2Captures = lobby.gameState.capturedCards.team2;
+
+    const team1RoundPoints = calculatePoints(team1Captures);
+    const team2RoundPoints = calculatePoints(team2Captures);
+
+    lobby.gameState.teamScores.team1 += team1RoundPoints;
+    lobby.gameState.teamScores.team2 += team2RoundPoints;
+
+    if (lobby.gameState.teamScores.team1 >= 100 || lobby.gameState.teamScores.team2 >= 100) {
+      lobby.gameState.gamePhase = 'gameEnd';
+    } else {
+      // Setup next round
+      lobby.gameState.roundNumber += 1;
+      lobby.gameState.gamePhase = 'bidding';
+
+      const deck = shuffle(createDeck());
+      let deckIndex = 0;
+
+      const floorCards = deck.slice(deckIndex, 4);
+      deckIndex += 4;
+
+      const hands: Card[][] = [];
+      for (let i = 0; i < 4; i++) {
+        hands.push(deck.slice(deckIndex, deckIndex + 12));
+        deckIndex += 12;
+      }
+
+      lobby.hands.clear();
+      lobby.players.forEach((p, i) => {
+        lobby.hands?.set(p.id, hands[i]);
+      });
+
+      lobby.gameState.floor = floorCards;
+      lobby.gameState.capturedCards = { team1: [], team2: [] };
+      lobby.gameState.bid = undefined;
+      lobby.gameState.currentPlayerIndex = 0;
+
+      // Broadcast new deal cards privately to all
+      lobby.players.forEach((p, i) => {
+        io.to(p.socketId).emit('deal-cards', {
+          lobbyCode: lobby.code,
+          floor: floorCards,
+          hand: hands[i],
+          playerIndex: i,
+          biddingPlayerIndex: 0,
+        });
+      });
+    }
+
+    io.to(lobby.code).emit('game-state', lobby.gameState);
+  }
+}
+
+// Bot turn manager
+function checkAndTriggerBotTurn(lobby: LobbyState) {
+  if (!lobby.gameState) return;
+
+  if (lobby.gameState.gamePhase === 'bidding') {
+    const bidder = lobby.players[0];
+    if (bidder && bidder.socketId.startsWith('socket-Bot_')) {
+      setTimeout(() => {
+        const currentLobby = lobbies.get(lobby.code);
+        if (!currentLobby || !currentLobby.gameState || currentLobby.gameState.gamePhase !== 'bidding') return;
+
+        const hand = currentLobby.hands?.get(bidder.id) || [];
+        const bidCard = hand.find(c => {
+          const val = rankToValue[c.rank];
+          return val >= 9 && val <= 14;
+        });
+
+        if (bidCard) {
+          const bidVal = rankToValue[bidCard.rank];
+          currentLobby.gameState.bid = { playerId: bidder.id, value: bidVal, fulfilled: false };
+          currentLobby.gameState.gamePhase = 'playing';
+          io.to(currentLobby.code).emit('bid-placed', { bid: bidVal, playerId: bidder.id });
+          io.to(currentLobby.code).emit('game-state', currentLobby.gameState);
+          
+          checkAndTriggerBotTurn(currentLobby);
+        }
+      }, 1500);
+    }
+  } else if (lobby.gameState.gamePhase === 'playing') {
+    const currentPlayer = lobby.players[lobby.gameState.currentPlayerIndex];
+    if (currentPlayer && currentPlayer.socketId.startsWith('socket-Bot_')) {
+      setTimeout(() => {
+        const currentLobby = lobbies.get(lobby.code);
+        if (!currentLobby || !currentLobby.gameState || currentLobby.gameState.gamePhase !== 'playing') return;
+
+        const verifyPlayer = currentLobby.players[currentLobby.gameState.currentPlayerIndex];
+        if (verifyPlayer?.id !== currentPlayer.id) return;
+
+        const hand = currentLobby.hands?.get(currentPlayer.id) || [];
+        if (hand.length === 0) return;
+
+        let playAction = 'THROW';
+        let selectedCard = hand[0];
+        let targetCards: Card[] = [];
+
+        // Check if bot can capture
+        for (const card of hand) {
+          const capturable = findCapturableCardsForBot(card, currentLobby.gameState.floor);
+          if (capturable.length > 0) {
+            playAction = 'CAPTURE';
+            selectedCard = card;
+            targetCards = capturable;
+            break;
+          }
+        }
+
+        const team = currentPlayer.team === 1 ? 'team1' : 'team2';
+
+        if (playAction === 'CAPTURE') {
+          targetCards.forEach(c => {
+            currentLobby.gameState!.floor = currentLobby.gameState!.floor.filter(fc => fc.id !== c.id);
+          });
+          const captured = [selectedCard, ...targetCards];
+          currentLobby.gameState.capturedCards[team].push(...captured);
+
+          const isSeep = currentLobby.gameState.floor.length === 0;
+          if (isSeep) {
+            currentLobby.gameState.seepCount += 1;
+            currentLobby.gameState.teamScores[team] += 50;
+            io.to(currentLobby.code).emit('seep-executed', { playerId: currentPlayer.id });
+          }
+        } else {
+          currentLobby.gameState.floor.push(selectedCard);
+        }
+
+        currentLobby.hands?.set(currentPlayer.id, hand.filter(c => c.id !== selectedCard.id));
+        currentLobby.gameState.currentPlayerIndex = (currentLobby.gameState.currentPlayerIndex + 1) % 4;
+
+        io.to(currentLobby.code).emit('game-state', currentLobby.gameState);
+        io.to(currentLobby.code).emit('game-updated', {
+          lobbyCode: currentLobby.code,
+          action: playAction,
+          payload: {
+            card: selectedCard,
+            targetCards: targetCards
+          },
+          playerId: currentPlayer.id
+        });
+
+        checkRoundEnd(currentLobby);
+        checkAndTriggerBotTurn(currentLobby);
+      }, 1500);
+    }
+  }
+}
+
 // In-memory storage
 const lobbies = new Map<string, LobbyState>();
 const socketToLobby = new Map<string, string>();
@@ -211,6 +402,60 @@ io.on('connection', (socket: Socket) => {
     });
   });
 
+  // Add dummy player (bot) to lobby
+  socket.on('add-bot', ({ lobbyCode }: { lobbyCode: string }) => {
+    const lobby = lobbies.get(lobbyCode);
+    if (!lobby) {
+      socket.emit('error-message', { message: 'Lobby not found' });
+      return;
+    }
+    if (lobby.players.length >= 4) {
+      socket.emit('error-message', { message: 'Lobby is full' });
+      return;
+    }
+
+    const botNum = lobby.players.filter(p => p.id.startsWith('Bot_')).length + 1;
+    const botId = `Bot_${botNum}`;
+    const team = (lobby.players.length % 2 === 0) ? 1 : 2;
+
+    lobby.players.push({
+      id: botId,
+      socketId: `socket-Bot_${botId}-${lobbyCode}`,
+      team
+    });
+    lobby.hands?.set(botId, []);
+
+    io.to(lobbyCode).emit('player-joined', { userId: botId });
+    io.to(lobbyCode).emit('lobby-state', {
+      players: lobby.players.map(p => p.id)
+    });
+  });
+
+  // Sync game and deal cards on request (avoids mounting race condition)
+  socket.on('request-deal', ({ lobbyCode }: { lobbyCode: string }) => {
+    const userId = socket.data.userId as string;
+    const lobby = lobbies.get(lobbyCode);
+    if (!lobby || !lobby.gameState || !lobby.hands) return;
+
+    const playerIndex = lobby.players.findIndex(p => p.id === userId);
+    if (playerIndex === -1) return;
+
+    // Send the cards privately to the requesting player
+    socket.emit('deal-cards', {
+      lobbyCode,
+      floor: lobby.gameState.floor,
+      hand: lobby.hands.get(userId) || [],
+      playerIndex,
+      biddingPlayerIndex: 0,
+    });
+
+    // Also send the game state
+    socket.emit('game-state', lobby.gameState);
+
+    // Trigger bot turn if it is currently a bot's turn
+    checkAndTriggerBotTurn(lobby);
+  });
+
   // Start game
   socket.on('start-game', ({ lobbyCode }: { lobbyCode: string }) => {
     const userId = socket.data.userId as string;
@@ -254,12 +499,21 @@ io.on('connection', (socket: Socket) => {
         bid: undefined,
       };
 
-      io.to(lobbyCode).emit('game-started');
-      io.to(lobbyCode).emit('deal-cards', {
-        floor: floorCards,
-        hands,
-        biddingPlayerIndex: 0,
+      io.to(lobbyCode).emit('game-started', { lobbyCode });
+
+      // Send each player only their own hand (private), along with their seat index
+      lobby.players.forEach((p, i) => {
+        io.to(p.socketId).emit('deal-cards', {
+          lobbyCode,
+          floor: floorCards,
+          hand: hands[i],
+          playerIndex: i,
+          biddingPlayerIndex: 0,
+        });
       });
+
+      // Trigger bot turn if the first player is a bot
+      checkAndTriggerBotTurn(lobby);
     } else {
       socket.emit('error-message', { message: 'Need 4 players to start' });
     }
@@ -294,6 +548,9 @@ io.on('connection', (socket: Socket) => {
     lobby.gameState.gamePhase = 'playing';
     io.to(lobbyCode).emit('bid-placed', { bid, playerId });
     io.to(lobbyCode).emit('game-state', lobby.gameState);
+
+    // Trigger bot turn if it is a bot's turn now
+    checkAndTriggerBotTurn(lobby);
   });
 
   // Handle game actions
@@ -320,34 +577,80 @@ io.on('connection', (socket: Socket) => {
       return;
     }
 
-    // Valid capture check
     if (action === 'CAPTURE') {
       const cardValue = getCardNumericValue(card);
-      const canCapture = canSumTo(cardValue, targetCards);
+      const canCapture = canSumTo(cardValue, targetCards || []);
 
-      if (canCapture) {
-        // Remove captured cards from floor
-        targetCards.forEach((c: Card) => {
-          lobby.gameState!.floor = lobby.gameState!.floor.filter(fc => fc.id !== c.id);
-        });
-
-        // Check if Seep occurred
-        const isSeep = lobby.gameState.floor.length === 0;
-        if (isSeep) {
-          lobby.gameState.seepCount += 1;
-          io.to(lobbyCode).emit('seep-executed', { playerId });
-        }
-
-        // Remove played card from hand and advance turn
-        lobby.hands.set(playerId, hand.filter(c => c.id !== card.id));
-        lobby.gameState.currentPlayerIndex = (lobby.gameState.currentPlayerIndex + 1) % 4;
-
-        io.to(lobbyCode).emit('game-state', lobby.gameState);
+      if (!canCapture) {
+        socket.emit('error-message', { message: 'Invalid capture — cards don\'t sum to your card value' });
+        return;
       }
+
+      // Determine team of current player
+      const currentPlayerData = lobby.players[lobby.gameState.currentPlayerIndex];
+      const team = currentPlayerData?.team === 1 ? 'team1' : 'team2';
+
+      // Remove captured cards from floor and add to team's captures
+      const captured = [card, ...(targetCards || [])];
+      (targetCards || []).forEach((c: Card) => {
+        lobby.gameState!.floor = lobby.gameState!.floor.filter(fc => fc.id !== c.id);
+      });
+      lobby.gameState.capturedCards[team].push(...captured);
+
+      // Check if Seep occurred (floor cleared)
+      const isSeep = lobby.gameState.floor.length === 0;
+      if (isSeep) {
+        lobby.gameState.seepCount += 1;
+        lobby.gameState.teamScores[team] += 50;
+        io.to(lobbyCode).emit('seep-executed', { playerId });
+      }
+
+      // Remove played card from hand and advance turn
+      lobby.hands.set(playerId, hand.filter(c => c.id !== card.id));
+      lobby.gameState.currentPlayerIndex = (lobby.gameState.currentPlayerIndex + 1) % 4;
+
+      io.to(lobbyCode).emit('game-state', lobby.gameState);
+    } else if (action === 'THROW') {
+      // Throw: place card on the floor without capturing
+      lobby.gameState.floor.push(card);
+
+      // Remove played card from hand and advance turn
+      lobby.hands.set(playerId, hand.filter(c => c.id !== card.id));
+      lobby.gameState.currentPlayerIndex = (lobby.gameState.currentPlayerIndex + 1) % 4;
+
+      io.to(lobbyCode).emit('game-state', lobby.gameState);
+    } else if (action === 'BUILD_HOUSE') {
+      const houseValue = payload.houseValue as 9 | 10 | 11 | 12 | 13 | 14;
+      // Basic house build: played card + target floor cards form a house
+      const newHouse = {
+        id: `house-${Date.now()}`,
+        cards: [card, ...(targetCards || [])],
+        value: houseValue,
+        isPukta: false,
+        createdBy: playerId,
+      };
+
+      // Remove target cards from floor and add the house
+      (targetCards || []).forEach((c: Card) => {
+        lobby.gameState!.floor = lobby.gameState!.floor.filter(fc => fc.id !== c.id);
+      });
+      lobby.gameState.houses.push(newHouse);
+
+      // Remove played card from hand and advance turn
+      lobby.hands.set(playerId, hand.filter(c => c.id !== card.id));
+      lobby.gameState.currentPlayerIndex = (lobby.gameState.currentPlayerIndex + 1) % 4;
+
+      io.to(lobbyCode).emit('game-state', lobby.gameState);
     }
 
-    // Relay action to other players
+    // Relay action to other players for animation/display purposes
     socket.to(lobbyCode).emit('game-updated', { ...data, playerId });
+
+    // Check if round should end
+    checkRoundEnd(lobby);
+
+    // Trigger bot turn if it is a bot's turn now
+    checkAndTriggerBotTurn(lobby);
   });
 
   // Disconnect
@@ -395,12 +698,23 @@ function authMiddleware(requiredRole: 'admin' | 'player' | 'spectator') {
   };
 }
 
-// Admin-only route example
+// Admin-only route: delete lobby
 app.delete('/api/lobby/:code', authMiddleware('admin'), (req, res) => {
   const { code } = req.params;
   lobbies.delete(code);
   io.to(code).emit('lobby-deleted');
   res.json({ message: 'Lobby deleted' });
+});
+
+// Admin-only route: list all lobbies
+app.get('/api/admin/lobbies', authMiddleware('admin'), (req: any, res: any) => {
+  const allLobbies = Array.from(lobbies.values()).map(l => ({
+    code: l.code,
+    isPrivate: l.isPrivate,
+    players: l.players.map(p => p.id),
+    status: l.status
+  }));
+  res.json({ lobbies: allLobbies });
 });
 
 // Health check
@@ -409,8 +723,13 @@ app.get('/health', (_req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+initDatabase().then(() => {
+  server.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+  });
+}).catch(err => {
+  console.error('Server failed to start due to database error:', err);
+  process.exit(1);
 });
 
 export { app, io };
