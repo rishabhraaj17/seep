@@ -47,13 +47,14 @@ export interface GameState {
   roundNumber: number;
   teamScores: { team1: number; team2: number };
   capturedCards: { team1: Card[]; team2: Card[] };
-  seepCount: number;
+  seepCount: { team1: number; team2: number };
   gamePhase: 'bidding' | 'playing' | 'roundEnd' | 'gameEnd';
   bid?: {
     playerId: string;
     value: number;
     fulfilled: boolean;
   };
+  lastCaptureTeam?: 1 | 2;
 }
 
 export interface LobbyAction {

@@ -10,5 +10,8 @@
   },
   "workspaces": [
     "packages/*"
-  ]
+  ],
+  "allowScripts": {
+    "esbuild@0.28.1": true
+  }
 }

@@ -35,13 +35,14 @@ interface GameState {
   roundNumber: number;
   teamScores: { team1: number; team2: number };
   capturedCards: { team1: Card[]; team2: Card[] };
-  seepCount: number;
+  seepCount: { team1: number; team2: number };
   gamePhase: 'bidding' | 'playing' | 'roundEnd' | 'gameEnd';
   bid?: {
     playerId: string;
     value: number;
     fulfilled: boolean;
   };
+  lastCaptureTeam?: 1 | 2;
 }
 
 interface LobbyState {
@@ -162,6 +163,13 @@ function checkRoundEnd(lobby: LobbyState) {
   }
 
   if (allEmpty) {
+    // Award remaining floor cards to the team that made the last capture
+    const lastTeam = lobby.gameState.lastCaptureTeam === 2 ? 'team2' : 'team1';
+    if (lobby.gameState.floor.length > 0) {
+      lobby.gameState.capturedCards[lastTeam].push(...lobby.gameState.floor);
+      lobby.gameState.floor = [];
+    }
+
     const team1Captures = lobby.gameState.capturedCards.team1;
     const team2Captures = lobby.gameState.capturedCards.team2;
 
@@ -280,10 +288,11 @@ function checkAndTriggerBotTurn(lobby: LobbyState) {
           });
           const captured = [selectedCard, ...targetCards];
           currentLobby.gameState.capturedCards[team].push(...captured);
+          currentLobby.gameState.lastCaptureTeam = currentPlayer.team === 2 ? 2 : 1;
 
           const isSeep = currentLobby.gameState.floor.length === 0;
           if (isSeep) {
-            currentLobby.gameState.seepCount += 1;
+            currentLobby.gameState.seepCount[team] += 1;
             currentLobby.gameState.teamScores[team] += 50;
             io.to(currentLobby.code).emit('seep-executed', { playerId: currentPlayer.id });
           }
@@ -494,9 +503,10 @@ io.on('connection', (socket: Socket) => {
         roundNumber: 1,
         teamScores: { team1: 0, team2: 0 },
         capturedCards: { team1: [], team2: [] },
-        seepCount: 0,
+        seepCount: { team1: 0, team2: 0 },
         gamePhase: 'bidding',
         bid: undefined,
+        lastCaptureTeam: undefined,
       };
 
       io.to(lobbyCode).emit('game-started', { lobbyCode });
@@ -596,11 +606,12 @@ io.on('connection', (socket: Socket) => {
         lobby.gameState!.floor = lobby.gameState!.floor.filter(fc => fc.id !== c.id);
       });
       lobby.gameState.capturedCards[team].push(...captured);
+      lobby.gameState.lastCaptureTeam = currentPlayerData?.team === 2 ? 2 : 1;
 
       // Check if Seep occurred (floor cleared)
       const isSeep = lobby.gameState.floor.length === 0;
       if (isSeep) {
-        lobby.gameState.seepCount += 1;
+        lobby.gameState.seepCount[team] += 1;
         lobby.gameState.teamScores[team] += 50;
         io.to(lobbyCode).emit('seep-executed', { playerId });
       }

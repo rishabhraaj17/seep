@@ -42,7 +42,8 @@ export async function initDatabase() {
         team INTEGER NOT NULL CHECK (team IN (1, 2)),
         seat INTEGER NOT NULL CHECK (seat BETWEEN 1 AND 4),
         joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        PRIMARY KEY (lobby_code, seat)
+        PRIMARY KEY (lobby_code, seat),
+        UNIQUE (lobby_code, user_id)
       );
     `);
 

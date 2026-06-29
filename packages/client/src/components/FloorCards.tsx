@@ -4,25 +4,34 @@ import type { Card } from '../types';
 
 interface FloorCardsProps {
   cards: Card[];
+  highlightedIds?: string[];
+  onCardClick?: (card: Card) => void;
 }
 
-export default function FloorCards({ cards }: FloorCardsProps) {
+export default function FloorCards({ cards, highlightedIds = [], onCardClick }: FloorCardsProps) {
   return (
-    <div className="flex flex-wrap gap-3 justify-center items-center p-4">
+    <div className="flex flex-wrap gap-2 sm:gap-3 justify-center items-center p-4 max-w-lg">
       {cards.map((card, index) => (
         <motion.div
           key={card.id + index}
-          initial={{ scale: 0, rotate: -10 }}
-          animate={{ scale: 1, rotate: 0 }}
-          transition={{ delay: index * 0.1 }}
+          initial={{ scale: 0, rotate: Math.random() * 20 - 10, y: -20 }}
+          animate={{ scale: 1, rotate: 0, y: 0 }}
+          transition={{ delay: index * 0.06, type: 'spring', stiffness: 300, damping: 20 }}
         >
-          <PlayingCard card={card} size="lg" />
+          <PlayingCard
+            card={card}
+            size="lg"
+            isSelected={highlightedIds.includes(card.id)}
+            onClick={onCardClick ? () => onCardClick(card) : undefined}
+          />
         </motion.div>
       ))}
+
       {cards.length === 0 && (
-        <div className="text-slate-400 text-center">
-          <p>Floor is empty</p>
-          <p className="text-sm">(Throw a card to start building)</p>
+        <div className="flex flex-col items-center gap-2 py-6">
+          <div className="text-4xl opacity-20 select-none">🃏</div>
+          <p className="text-sm font-display" style={{ color: 'rgba(245,240,232,0.3)' }}>Floor is empty</p>
+          <p className="text-xs" style={{ color: 'rgba(245,240,232,0.2)' }}>Throw a card to begin</p>
         </div>
       )}
     </div>
