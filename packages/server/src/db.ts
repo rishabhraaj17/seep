@@ -47,6 +47,10 @@ export async function initDatabase() {
       );
     `);
 
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_lobby_players_socket_id ON lobby_players(socket_id);
+    `);
+
     // Create game_states table
     await client.query(`
       CREATE TABLE IF NOT EXISTS game_states (
