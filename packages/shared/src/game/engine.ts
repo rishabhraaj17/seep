@@ -186,7 +186,7 @@ export function createInitialGameState(lobbyCode: string): GameState {
     roundNumber: 1,
     teamScores: { team1: 0, team2: 0 },
     capturedCards: { team1: [], team2: [] },
-    seepCount: 0,
+    seepCount: { team1: 0, team2: 0 },
     gamePhase: 'bidding',
   };
 }
