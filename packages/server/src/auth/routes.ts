@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import bcrypt from 'bcryptjs';
+import { randomUUID } from 'crypto';
 import { generateToken, verifyToken } from './jwt.js';
 import { pool } from '../db.js';
 
@@ -19,7 +20,7 @@ router.post('/register', async (req, res) => {
       return res.status(409).json({ error: 'Username already exists' });
     }
 
-    const id = Date.now().toString();
+    const id = randomUUID();
     const passwordHash = await bcrypt.hash(password, 10);
     const role = 'player';
 
@@ -119,6 +120,9 @@ router.post('/change-role', async (req, res) => {
     return res.status(400).json({ error: 'Invalid role' });
   }
 
+  // RBAC validation: Only admins can change other people's roles.
+  // Anyone can change their own role (Allows self-promotion for testing/dev environments).
+  // WARNING: This backdoor should be disabled or gated behind environment checks in production!
   const isSelf = payload.username === username;
   const isAdmin = payload.role === 'admin';
 
