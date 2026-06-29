@@ -14,6 +14,7 @@ export default function Scoreboard({
   team2Score = 0,
   round = 1,
   seepCount = { team1: 0, team2: 0 },
+  isOpen = true,
   onClose,
 }: ScoreboardProps) {
   const target = 100;
