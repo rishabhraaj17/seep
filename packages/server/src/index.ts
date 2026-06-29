@@ -6,7 +6,7 @@ import dotenv from 'dotenv';
 import { randomBytes } from 'crypto';
 import authRoutes from './auth/routes.js';
 import { generateToken, verifyToken, hasPermission } from './auth/jwt.js';
-import { initDatabase } from './db.js';
+import { initDatabase, pool } from './db.js';
 
 // Game types
 type Suit = 'hearts' | 'diamonds' | 'clubs' | 'spades';
@@ -149,8 +149,128 @@ function findCapturableCardsForBot(card: Card, floor: Card[]): Card[] {
   return [];
 }
 
+// Helper functions for Database Persistence
+async function loadLobby(code: string): Promise<LobbyState | null> {
+  const lobbyRes = await pool.query(
+    'SELECT code, is_private, status FROM lobbies WHERE code = $1',
+    [code]
+  );
+  if (lobbyRes.rows.length === 0) {
+    return null;
+  }
+  const lobbyRow = lobbyRes.rows[0];
+
+  const playersRes = await pool.query(
+    'SELECT user_id, socket_id, team FROM lobby_players WHERE lobby_code = $1 ORDER BY seat ASC',
+    [code]
+  );
+  const players = playersRes.rows.map(r => ({
+    id: r.user_id,
+    socketId: r.socket_id,
+    team: r.team,
+  }));
+
+  const lobby: LobbyState = {
+    code: lobbyRow.code,
+    isPrivate: lobbyRow.is_private,
+    status: lobbyRow.status,
+    players,
+  };
+
+  const gsRes = await pool.query(
+    'SELECT floor, houses, hands, current_player_index, round_number, team_scores, captured_cards, team_seeps, game_phase, bid, last_capture_team FROM game_states WHERE lobby_code = $1',
+    [code]
+  );
+
+  if (gsRes.rows.length > 0) {
+    const gsRow = gsRes.rows[0];
+    lobby.gameState = {
+      lobbyCode: code,
+      floor: gsRow.floor,
+      houses: gsRow.houses,
+      currentPlayerIndex: gsRow.current_player_index,
+      roundNumber: gsRow.round_number,
+      teamScores: gsRow.team_scores,
+      capturedCards: gsRow.captured_cards,
+      seepCount: gsRow.team_seeps,
+      gamePhase: gsRow.game_phase,
+      bid: gsRow.bid || undefined,
+      lastCaptureTeam: gsRow.last_capture_team || undefined,
+    };
+    const hands = new Map<string, Card[]>();
+    if (gsRow.hands) {
+      for (const [uid, cards] of Object.entries(gsRow.hands)) {
+        hands.set(uid, cards as Card[]);
+      }
+    }
+    lobby.hands = hands;
+  } else {
+    // Reconstruct empty hands for the players
+    const hands = new Map<string, Card[]>();
+    for (const p of players) {
+      hands.set(p.id, []);
+    }
+    lobby.hands = hands;
+  }
+
+  return lobby;
+}
+
+async function saveLobby(lobby: LobbyState): Promise<void> {
+  // Update status in lobbies
+  await pool.query(
+    'UPDATE lobbies SET status = $1, is_private = $2 WHERE code = $3',
+    [lobby.status, lobby.isPrivate, lobby.code]
+  );
+
+  if (lobby.gameState) {
+    // Convert Map to plain object for serialization
+    const handsObj: Record<string, Card[]> = {};
+    if (lobby.hands) {
+      for (const [uid, cards] of lobby.hands.entries()) {
+        handsObj[uid] = cards;
+      }
+    }
+
+    // Upsert game_states
+    await pool.query(
+      `INSERT INTO game_states (
+        lobby_code, floor, houses, hands, current_player_index, round_number, 
+        team_scores, captured_cards, team_seeps, game_phase, bid, last_capture_team
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+       ON CONFLICT (lobby_code) DO UPDATE SET
+        floor = EXCLUDED.floor,
+        houses = EXCLUDED.houses,
+        hands = EXCLUDED.hands,
+        current_player_index = EXCLUDED.current_player_index,
+        round_number = EXCLUDED.round_number,
+        team_scores = EXCLUDED.team_scores,
+        captured_cards = EXCLUDED.captured_cards,
+        team_seeps = EXCLUDED.team_seeps,
+        game_phase = EXCLUDED.game_phase,
+        bid = EXCLUDED.bid,
+        last_capture_team = EXCLUDED.last_capture_team,
+        updated_at = CURRENT_TIMESTAMP`,
+      [
+        lobby.code,
+        JSON.stringify(lobby.gameState.floor),
+        JSON.stringify(lobby.gameState.houses),
+        JSON.stringify(handsObj),
+        lobby.gameState.currentPlayerIndex,
+        lobby.gameState.roundNumber,
+        JSON.stringify(lobby.gameState.teamScores),
+        JSON.stringify(lobby.gameState.capturedCards),
+        JSON.stringify(lobby.gameState.seepCount),
+        lobby.gameState.gamePhase,
+        lobby.gameState.bid ? JSON.stringify(lobby.gameState.bid) : null,
+        lobby.gameState.lastCaptureTeam || null,
+      ]
+    );
+  }
+}
+
 // Check if round should end and update scores
-function checkRoundEnd(lobby: LobbyState) {
+async function checkRoundEnd(lobby: LobbyState) {
   if (!lobby.hands || !lobby.gameState) return;
 
   // Check if all players have 0 cards in hand
@@ -220,19 +340,24 @@ function checkRoundEnd(lobby: LobbyState) {
       });
     }
 
+    // Save updated state to database
+    await saveLobby(lobby);
+
     io.to(lobby.code).emit('game-state', lobby.gameState);
   }
 }
 
 // Bot turn manager
-function checkAndTriggerBotTurn(lobby: LobbyState) {
-  if (!lobby.gameState) return;
+async function checkAndTriggerBotTurn(lobbyCode: string) {
+  // Load lobby from database
+  const lobby = await loadLobby(lobbyCode);
+  if (!lobby || !lobby.gameState) return;
 
   if (lobby.gameState.gamePhase === 'bidding') {
     const bidder = lobby.players[0];
     if (bidder && bidder.socketId.startsWith('socket-Bot_')) {
-      setTimeout(() => {
-        const currentLobby = lobbies.get(lobby.code);
+      setTimeout(async () => {
+        const currentLobby = await loadLobby(lobbyCode);
         if (!currentLobby || !currentLobby.gameState || currentLobby.gameState.gamePhase !== 'bidding') return;
 
         const hand = currentLobby.hands?.get(bidder.id) || [];
@@ -245,18 +370,21 @@ function checkAndTriggerBotTurn(lobby: LobbyState) {
           const bidVal = rankToValue[bidCard.rank];
           currentLobby.gameState.bid = { playerId: bidder.id, value: bidVal, fulfilled: false };
           currentLobby.gameState.gamePhase = 'playing';
+          
+          await saveLobby(currentLobby);
+
           io.to(currentLobby.code).emit('bid-placed', { bid: bidVal, playerId: bidder.id });
           io.to(currentLobby.code).emit('game-state', currentLobby.gameState);
           
-          checkAndTriggerBotTurn(currentLobby);
+          await checkAndTriggerBotTurn(currentLobby.code);
         }
       }, 1500);
     }
   } else if (lobby.gameState.gamePhase === 'playing') {
     const currentPlayer = lobby.players[lobby.gameState.currentPlayerIndex];
     if (currentPlayer && currentPlayer.socketId.startsWith('socket-Bot_')) {
-      setTimeout(() => {
-        const currentLobby = lobbies.get(lobby.code);
+      setTimeout(async () => {
+        const currentLobby = await loadLobby(lobbyCode);
         if (!currentLobby || !currentLobby.gameState || currentLobby.gameState.gamePhase !== 'playing') return;
 
         const verifyPlayer = currentLobby.players[currentLobby.gameState.currentPlayerIndex];
@@ -303,6 +431,8 @@ function checkAndTriggerBotTurn(lobby: LobbyState) {
         currentLobby.hands?.set(currentPlayer.id, hand.filter(c => c.id !== selectedCard.id));
         currentLobby.gameState.currentPlayerIndex = (currentLobby.gameState.currentPlayerIndex + 1) % 4;
 
+        await saveLobby(currentLobby);
+
         io.to(currentLobby.code).emit('game-state', currentLobby.gameState);
         io.to(currentLobby.code).emit('game-updated', {
           lobbyCode: currentLobby.code,
@@ -314,16 +444,13 @@ function checkAndTriggerBotTurn(lobby: LobbyState) {
           playerId: currentPlayer.id
         });
 
-        checkRoundEnd(currentLobby);
-        checkAndTriggerBotTurn(currentLobby);
+        await checkRoundEnd(currentLobby);
+        await checkAndTriggerBotTurn(currentLobby.code);
       }, 1500);
     }
   }
 }
 
-// In-memory storage
-const lobbies = new Map<string, LobbyState>();
-const socketToLobby = new Map<string, string>();
 
 dotenv.config();
 
@@ -357,327 +484,416 @@ io.on('connection', (socket: Socket) => {
   console.log(`Player connected: ${socket.id}`);
 
   // Create lobby
-  socket.on('create-lobby', ({ isPrivate }: { isPrivate: boolean }) => {
+  socket.on('create-lobby', async ({ isPrivate }: { isPrivate: boolean }) => {
     const userId = socket.data.userId as string;
     const code = randomBytes(3).toString('hex').toUpperCase();
 
-    const lobby: LobbyState = {
-      code,
-      isPrivate: isPrivate || false,
-      players: [{ id: userId, socketId: socket.id, team: 1 }],
-      status: 'waiting',
-      hands: new Map([[userId, []]]),
-    };
+    try {
+      await pool.query('BEGIN');
 
-    lobbies.set(code, lobby);
-    socketToLobby.set(socket.id, code);
-    socket.join(code);
+      await pool.query(
+        'INSERT INTO lobbies (code, is_private, status, creator_id) VALUES ($1, $2, $3, $4)',
+        [code, isPrivate || false, 'waiting', userId]
+      );
 
-    socket.emit('lobby-created', { code, isPrivate });
-    socket.emit('lobby-state', { players: [userId] });
+      // Create lobby player (creator is first player: seat = 1, team = 1)
+      await pool.query(
+        'INSERT INTO lobby_players (lobby_code, user_id, socket_id, team, seat) VALUES ($1, $2, $3, $4, $5)',
+        [code, userId, socket.id, 1, 1]
+      );
+
+      await pool.query('COMMIT');
+
+      socket.join(code);
+      socket.emit('lobby-created', { code, isPrivate });
+      socket.emit('lobby-state', { players: [userId] });
+    } catch (err) {
+      await pool.query('ROLLBACK');
+      console.error('Error creating lobby:', err);
+      socket.emit('error-message', { message: 'Failed to create lobby' });
+    }
   });
 
   // Join lobby
-  socket.on('join-lobby', ({ lobbyCode }: { lobbyCode: string }) => {
+  socket.on('join-lobby', async ({ lobbyCode }: { lobbyCode: string }) => {
     const userId = socket.data.userId as string;
-    const lobby = lobbies.get(lobbyCode);
 
-    if (!lobby) {
-      socket.emit('error-message', { message: 'Lobby not found' });
-      return;
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      // Lock the lobby row for update
+      const lobbyRes = await client.query(
+        'SELECT status FROM lobbies WHERE code = $1 FOR UPDATE',
+        [lobbyCode]
+      );
+
+      if (lobbyRes.rows.length === 0) {
+        socket.emit('error-message', { message: 'Lobby not found' });
+        await client.query('ROLLBACK');
+        return;
+      }
+
+      // Check current players count and details
+      const playersRes = await client.query(
+        'SELECT user_id, team, seat FROM lobby_players WHERE lobby_code = $1 FOR UPDATE',
+        [lobbyCode]
+      );
+
+      const playersCount = playersRes.rows.length;
+      if (playersCount >= 4) {
+        socket.emit('error-message', { message: 'Lobby is full' });
+        await client.query('ROLLBACK');
+        return;
+      }
+
+      if (playersRes.rows.some(r => r.user_id === userId)) {
+        socket.emit('error-message', { message: 'Already in lobby' });
+        await client.query('ROLLBACK');
+        return;
+      }
+
+      // Calculate team and seat based on current players count
+      const team = (playersCount % 2 === 0) ? 1 : 2;
+      const seat = playersCount + 1;
+
+      await client.query(
+        'INSERT INTO lobby_players (lobby_code, user_id, socket_id, team, seat) VALUES ($1, $2, $3, $4, $5)',
+        [lobbyCode, userId, socket.id, team, seat]
+      );
+
+      await client.query('COMMIT');
+
+      socket.join(lobbyCode);
+
+      // Load updated lobby to broadcast state
+      const updatedLobby = await loadLobby(lobbyCode);
+      if (updatedLobby) {
+        io.to(lobbyCode).emit('player-joined', { userId });
+        io.to(lobbyCode).emit('lobby-state', {
+          players: updatedLobby.players.map(p => p.id)
+        });
+      }
+    } catch (err) {
+      await client.query('ROLLBACK');
+      console.error('Error joining lobby:', err);
+      socket.emit('error-message', { message: 'Failed to join lobby' });
+    } finally {
+      client.release();
     }
-
-    if (lobby.players.length >= 4) {
-      socket.emit('error-message', { message: 'Lobby is full' });
-      return;
-    }
-
-    if (lobby.players.some(p => p.id === userId)) {
-      socket.emit('error-message', { message: 'Already in lobby' });
-      return;
-    }
-
-    // Assign team (alternating: 1&3 vs 2&4)
-    const team = (lobby.players.length % 2 === 0) ? 1 : 2;
-    lobby.players.push({ id: userId, socketId: socket.id, team });
-    lobby.hands?.set(userId, []);
-
-    socketToLobby.set(socket.id, lobbyCode);
-    socket.join(lobbyCode);
-
-    io.to(lobbyCode).emit('player-joined', { userId });
-    io.to(lobbyCode).emit('lobby-state', {
-      players: lobby.players.map(p => p.id)
-    });
   });
 
   // Add dummy player (bot) to lobby
-  socket.on('add-bot', ({ lobbyCode }: { lobbyCode: string }) => {
-    const lobby = lobbies.get(lobbyCode);
-    if (!lobby) {
-      socket.emit('error-message', { message: 'Lobby not found' });
-      return;
+  socket.on('add-bot', async ({ lobbyCode }: { lobbyCode: string }) => {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const lobbyRes = await client.query(
+        'SELECT status FROM lobbies WHERE code = $1 FOR UPDATE',
+        [lobbyCode]
+      );
+
+      if (lobbyRes.rows.length === 0) {
+        socket.emit('error-message', { message: 'Lobby not found' });
+        await client.query('ROLLBACK');
+        return;
+      }
+
+      const playersRes = await client.query(
+        'SELECT user_id, team, seat FROM lobby_players WHERE lobby_code = $1 FOR UPDATE',
+        [lobbyCode]
+      );
+
+      const playersCount = playersRes.rows.length;
+      if (playersCount >= 4) {
+        socket.emit('error-message', { message: 'Lobby is full' });
+        await client.query('ROLLBACK');
+        return;
+      }
+
+      const botNum = playersRes.rows.filter(r => r.user_id.startsWith('Bot_')).length + 1;
+      const botId = `Bot_${botNum}`;
+      const team = (playersCount % 2 === 0) ? 1 : 2;
+      const seat = playersCount + 1;
+
+      await client.query(
+        'INSERT INTO lobby_players (lobby_code, user_id, socket_id, team, seat) VALUES ($1, $2, $3, $4, $5)',
+        [lobbyCode, botId, `socket-Bot_${botId}-${lobbyCode}`, team, seat]
+      );
+
+      await client.query('COMMIT');
+
+      const updatedLobby = await loadLobby(lobbyCode);
+      if (updatedLobby) {
+        io.to(lobbyCode).emit('player-joined', { userId: botId });
+        io.to(lobbyCode).emit('lobby-state', {
+          players: updatedLobby.players.map(p => p.id)
+        });
+      }
+    } catch (err) {
+      await client.query('ROLLBACK');
+      console.error('Error adding bot:', err);
+      socket.emit('error-message', { message: 'Failed to add bot' });
+    } finally {
+      client.release();
     }
-    if (lobby.players.length >= 4) {
-      socket.emit('error-message', { message: 'Lobby is full' });
-      return;
-    }
-
-    const botNum = lobby.players.filter(p => p.id.startsWith('Bot_')).length + 1;
-    const botId = `Bot_${botNum}`;
-    const team = (lobby.players.length % 2 === 0) ? 1 : 2;
-
-    lobby.players.push({
-      id: botId,
-      socketId: `socket-Bot_${botId}-${lobbyCode}`,
-      team
-    });
-    lobby.hands?.set(botId, []);
-
-    io.to(lobbyCode).emit('player-joined', { userId: botId });
-    io.to(lobbyCode).emit('lobby-state', {
-      players: lobby.players.map(p => p.id)
-    });
   });
 
   // Sync game and deal cards on request (avoids mounting race condition)
-  socket.on('request-deal', ({ lobbyCode }: { lobbyCode: string }) => {
+  socket.on('request-deal', async ({ lobbyCode }: { lobbyCode: string }) => {
     const userId = socket.data.userId as string;
-    const lobby = lobbies.get(lobbyCode);
-    if (!lobby || !lobby.gameState || !lobby.hands) return;
+    try {
+      const lobby = await loadLobby(lobbyCode);
+      if (!lobby || !lobby.gameState || !lobby.hands) return;
 
-    const playerIndex = lobby.players.findIndex(p => p.id === userId);
-    if (playerIndex === -1) return;
+      const playerIndex = lobby.players.findIndex(p => p.id === userId);
+      if (playerIndex === -1) return;
 
-    // Send the cards privately to the requesting player
-    socket.emit('deal-cards', {
-      lobbyCode,
-      floor: lobby.gameState.floor,
-      hand: lobby.hands.get(userId) || [],
-      playerIndex,
-      biddingPlayerIndex: 0,
-    });
+      socket.emit('deal-cards', {
+        lobbyCode,
+        floor: lobby.gameState.floor,
+        hand: lobby.hands.get(userId) || [],
+        playerIndex,
+        biddingPlayerIndex: 0,
+      });
 
-    // Also send the game state
-    socket.emit('game-state', lobby.gameState);
+      socket.emit('game-state', lobby.gameState);
 
-    // Trigger bot turn if it is currently a bot's turn
-    checkAndTriggerBotTurn(lobby);
+      await checkAndTriggerBotTurn(lobbyCode);
+    } catch (err) {
+      console.error('Error on request-deal:', err);
+    }
   });
 
   // Start game
-  socket.on('start-game', ({ lobbyCode }: { lobbyCode: string }) => {
+  socket.on('start-game', async ({ lobbyCode }: { lobbyCode: string }) => {
     const userId = socket.data.userId as string;
-    const lobby = lobbies.get(lobbyCode);
-    // Only a player already in the lobby can start it
-    if (lobby && lobby.players.length === 4 && lobby.players.some(p => p.id === userId)) {
-      lobby.status = 'bidding';
+    try {
+      const lobby = await loadLobby(lobbyCode);
+      if (lobby && lobby.players.length === 4 && lobby.players.some(p => p.id === userId)) {
+        lobby.status = 'bidding';
 
-      // Deal cards
-      const deck = shuffle(createDeck());
-      let deckIndex = 0;
+        // Deal cards
+        const deck = shuffle(createDeck());
+        let deckIndex = 0;
 
-      // Deal 4 floor cards
-      const floorCards = deck.slice(deckIndex, 4);
-      deckIndex += 4;
+        const floorCards = deck.slice(deckIndex, 4);
+        deckIndex += 4;
 
-      // Deal 12 cards to each player
-      const hands: Card[][] = [];
-      for (let i = 0; i < 4; i++) {
-        hands.push(deck.slice(deckIndex, deckIndex + 12));
-        deckIndex += 12;
-      }
+        const hands: Card[][] = [];
+        for (let i = 0; i < 4; i++) {
+          hands.push(deck.slice(deckIndex, deckIndex + 12));
+          deckIndex += 12;
+        }
 
-      // Store hands in lobby
-      lobby.hands = new Map();
-      lobby.players.forEach((p, i) => {
-        lobby.hands?.set(p.id, hands[i]);
-      });
+        lobby.hands = new Map();
+        lobby.players.forEach((p, i) => {
+          lobby.hands?.set(p.id, hands[i]);
+        });
 
-      // Initialize game state
-      lobby.gameState = {
-        lobbyCode,
-        floor: floorCards,
-        houses: [],
-        currentPlayerIndex: 0,
-        roundNumber: 1,
-        teamScores: { team1: 0, team2: 0 },
-        capturedCards: { team1: [], team2: [] },
-        seepCount: { team1: 0, team2: 0 },
-        gamePhase: 'bidding',
-        bid: undefined,
-        lastCaptureTeam: undefined,
-      };
-
-      io.to(lobbyCode).emit('game-started', { lobbyCode });
-
-      // Send each player only their own hand (private), along with their seat index
-      lobby.players.forEach((p, i) => {
-        io.to(p.socketId).emit('deal-cards', {
+        lobby.gameState = {
           lobbyCode,
           floor: floorCards,
-          hand: hands[i],
-          playerIndex: i,
-          biddingPlayerIndex: 0,
-        });
-      });
+          houses: [],
+          currentPlayerIndex: 0,
+          roundNumber: 1,
+          teamScores: { team1: 0, team2: 0 },
+          capturedCards: { team1: [], team2: [] },
+          seepCount: { team1: 0, team2: 0 },
+          gamePhase: 'bidding',
+          bid: undefined,
+          lastCaptureTeam: undefined,
+        };
 
-      // Trigger bot turn if the first player is a bot
-      checkAndTriggerBotTurn(lobby);
-    } else {
-      socket.emit('error-message', { message: 'Need 4 players to start' });
+        await saveLobby(lobby);
+
+        io.to(lobbyCode).emit('game-started', { lobbyCode });
+
+        lobby.players.forEach((p, i) => {
+          io.to(p.socketId).emit('deal-cards', {
+            lobbyCode,
+            floor: floorCards,
+            hand: hands[i],
+            playerIndex: i,
+            biddingPlayerIndex: 0,
+          });
+        });
+
+        await checkAndTriggerBotTurn(lobbyCode);
+      } else {
+        socket.emit('error-message', { message: 'Need 4 players to start' });
+      }
+    } catch (err) {
+      console.error('Error starting game:', err);
+      socket.emit('error-message', { message: 'Failed to start game' });
     }
   });
 
   // Place bid
-  socket.on('place-bid', ({ lobbyCode, bid, cardId }: {
+  socket.on('place-bid', async ({ lobbyCode, bid, cardId }: {
     lobbyCode: string;
     bid: number;
     cardId: string;
   }) => {
     const playerId = socket.data.userId as string;
-    const lobby = lobbies.get(lobbyCode);
-    if (!lobby?.gameState || !lobby.hands) return;
+    try {
+      const lobby = await loadLobby(lobbyCode);
+      if (!lobby?.gameState || !lobby.hands) return;
 
-    // Only the bidding player (index 0) can place a bid
-    const biddingPlayer = lobby.players[0];
-    if (biddingPlayer?.id !== playerId) {
-      socket.emit('error-message', { message: 'Not your turn to bid' });
-      return;
-    }
-
-    const hand = lobby.hands.get(playerId) || [];
-    const hasCard = hand.some(c => c.id === cardId);
-
-    if (!hasCard) {
-      socket.emit('error-message', { message: 'Invalid bid card' });
-      return;
-    }
-
-    lobby.gameState.bid = { playerId, value: bid, fulfilled: false };
-    lobby.gameState.gamePhase = 'playing';
-    io.to(lobbyCode).emit('bid-placed', { bid, playerId });
-    io.to(lobbyCode).emit('game-state', lobby.gameState);
-
-    // Trigger bot turn if it is a bot's turn now
-    checkAndTriggerBotTurn(lobby);
-  });
-
-  // Handle game actions
-  socket.on('game-action', (data: { lobbyCode: string; action: string; payload: { card: Card; targetCards: Card[]; houseValue?: number } }) => {
-    const playerId = socket.data.userId as string;
-    const lobby = lobbies.get(data.lobbyCode);
-    if (!lobby?.gameState || !lobby.hands) return;
-
-    const { action, payload } = data;
-    const { card, targetCards } = payload;
-    const lobbyCode = data.lobbyCode;
-
-    // Enforce turn order
-    const currentPlayer = lobby.players[lobby.gameState.currentPlayerIndex];
-    if (currentPlayer?.id !== playerId) {
-      socket.emit('error-message', { message: 'Not your turn' });
-      return;
-    }
-
-    // Verify the played card is actually in the player's hand
-    const hand = lobby.hands.get(playerId) || [];
-    if (!hand.some(c => c.id === card.id)) {
-      socket.emit('error-message', { message: 'Card not in hand' });
-      return;
-    }
-
-    if (action === 'CAPTURE') {
-      const cardValue = getCardNumericValue(card);
-      const canCapture = canSumTo(cardValue, targetCards || []);
-
-      if (!canCapture) {
-        socket.emit('error-message', { message: 'Invalid capture — cards don\'t sum to your card value' });
+      const biddingPlayer = lobby.players[0];
+      if (biddingPlayer?.id !== playerId) {
+        socket.emit('error-message', { message: 'Not your turn to bid' });
         return;
       }
 
-      // Determine team of current player
-      const currentPlayerData = lobby.players[lobby.gameState.currentPlayerIndex];
-      const team = currentPlayerData?.team === 1 ? 'team1' : 'team2';
+      const hand = lobby.hands.get(playerId) || [];
+      const hasCard = hand.some(c => c.id === cardId);
 
-      // Remove captured cards from floor and add to team's captures
-      const captured = [card, ...(targetCards || [])];
-      (targetCards || []).forEach((c: Card) => {
-        lobby.gameState!.floor = lobby.gameState!.floor.filter(fc => fc.id !== c.id);
-      });
-      lobby.gameState.capturedCards[team].push(...captured);
-      lobby.gameState.lastCaptureTeam = currentPlayerData?.team === 2 ? 2 : 1;
-
-      // Check if Seep occurred (floor cleared)
-      const isSeep = lobby.gameState.floor.length === 0;
-      if (isSeep) {
-        lobby.gameState.seepCount[team] += 1;
-        lobby.gameState.teamScores[team] += 50;
-        io.to(lobbyCode).emit('seep-executed', { playerId });
+      if (!hasCard) {
+        socket.emit('error-message', { message: 'Invalid bid card' });
+        return;
       }
 
-      // Remove played card from hand and advance turn
-      lobby.hands.set(playerId, hand.filter(c => c.id !== card.id));
-      lobby.gameState.currentPlayerIndex = (lobby.gameState.currentPlayerIndex + 1) % 4;
+      lobby.gameState.bid = { playerId, value: bid, fulfilled: false };
+      lobby.gameState.gamePhase = 'playing';
 
+      await saveLobby(lobby);
+
+      io.to(lobbyCode).emit('bid-placed', { bid, playerId });
       io.to(lobbyCode).emit('game-state', lobby.gameState);
-    } else if (action === 'THROW') {
-      // Throw: place card on the floor without capturing
-      lobby.gameState.floor.push(card);
 
-      // Remove played card from hand and advance turn
-      lobby.hands.set(playerId, hand.filter(c => c.id !== card.id));
-      lobby.gameState.currentPlayerIndex = (lobby.gameState.currentPlayerIndex + 1) % 4;
-
-      io.to(lobbyCode).emit('game-state', lobby.gameState);
-    } else if (action === 'BUILD_HOUSE') {
-      const houseValue = payload.houseValue as 9 | 10 | 11 | 12 | 13 | 14;
-      // Basic house build: played card + target floor cards form a house
-      const newHouse = {
-        id: `house-${Date.now()}`,
-        cards: [card, ...(targetCards || [])],
-        value: houseValue,
-        isPukta: false,
-        createdBy: playerId,
-      };
-
-      // Remove target cards from floor and add the house
-      (targetCards || []).forEach((c: Card) => {
-        lobby.gameState!.floor = lobby.gameState!.floor.filter(fc => fc.id !== c.id);
-      });
-      lobby.gameState.houses.push(newHouse);
-
-      // Remove played card from hand and advance turn
-      lobby.hands.set(playerId, hand.filter(c => c.id !== card.id));
-      lobby.gameState.currentPlayerIndex = (lobby.gameState.currentPlayerIndex + 1) % 4;
-
-      io.to(lobbyCode).emit('game-state', lobby.gameState);
+      await checkAndTriggerBotTurn(lobbyCode);
+    } catch (err) {
+      console.error('Error placing bid:', err);
     }
+  });
 
-    // Relay action to other players for animation/display purposes
-    socket.to(lobbyCode).emit('game-updated', { ...data, playerId });
+  // Handle game actions
+  socket.on('game-action', async (data: { lobbyCode: string; action: string; payload: { card: Card; targetCards: Card[]; houseValue?: number } }) => {
+    const playerId = socket.data.userId as string;
+    try {
+      const lobby = await loadLobby(data.lobbyCode);
+      if (!lobby?.gameState || !lobby.hands) return;
 
-    // Check if round should end
-    checkRoundEnd(lobby);
+      const { action, payload } = data;
+      const { card, targetCards } = payload;
+      const lobbyCode = data.lobbyCode;
 
-    // Trigger bot turn if it is a bot's turn now
-    checkAndTriggerBotTurn(lobby);
+      // Enforce turn order
+      const currentPlayer = lobby.players[lobby.gameState.currentPlayerIndex];
+      if (currentPlayer?.id !== playerId) {
+        socket.emit('error-message', { message: 'Not your turn' });
+        return;
+      }
+
+      // Verify the played card is actually in the player's hand
+      const hand = lobby.hands.get(playerId) || [];
+      if (!hand.some(c => c.id === card.id)) {
+        socket.emit('error-message', { message: 'Card not in hand' });
+        return;
+      }
+
+      if (action === 'CAPTURE') {
+        const cardValue = getCardNumericValue(card);
+        const canCapture = canSumTo(cardValue, targetCards || []);
+
+        if (!canCapture) {
+          socket.emit('error-message', { message: 'Invalid capture — cards don\'t sum to your card value' });
+          return;
+        }
+
+        const team = currentPlayer.team === 1 ? 'team1' : 'team2';
+
+        const captured = [card, ...(targetCards || [])];
+        (targetCards || []).forEach((c: Card) => {
+          lobby.gameState!.floor = lobby.gameState!.floor.filter(fc => fc.id !== c.id);
+        });
+        lobby.gameState.capturedCards[team].push(...captured);
+        lobby.gameState.lastCaptureTeam = currentPlayer.team === 2 ? 2 : 1;
+
+        const isSeep = lobby.gameState.floor.length === 0;
+        if (isSeep) {
+          lobby.gameState.seepCount[team] += 1;
+          lobby.gameState.teamScores[team] += 50;
+          io.to(lobbyCode).emit('seep-executed', { playerId });
+        }
+
+        lobby.hands.set(playerId, hand.filter(c => c.id !== card.id));
+        lobby.gameState.currentPlayerIndex = (lobby.gameState.currentPlayerIndex + 1) % 4;
+
+        io.to(lobbyCode).emit('game-state', lobby.gameState);
+      } else if (action === 'THROW') {
+        lobby.gameState.floor.push(card);
+
+        lobby.hands.set(playerId, hand.filter(c => c.id !== card.id));
+        lobby.gameState.currentPlayerIndex = (lobby.gameState.currentPlayerIndex + 1) % 4;
+
+        io.to(lobbyCode).emit('game-state', lobby.gameState);
+      } else if (action === 'BUILD_HOUSE') {
+        const houseValue = payload.houseValue as 9 | 10 | 11 | 12 | 13 | 14;
+        const newHouse = {
+          id: `house-${Date.now()}`,
+          cards: [card, ...(targetCards || [])],
+          value: houseValue,
+          isPukta: false,
+          createdBy: playerId,
+        };
+
+        (targetCards || []).forEach((c: Card) => {
+          lobby.gameState!.floor = lobby.gameState!.floor.filter(fc => fc.id !== c.id);
+        });
+        lobby.gameState.houses.push(newHouse);
+
+        lobby.hands.set(playerId, hand.filter(c => c.id !== card.id));
+        lobby.gameState.currentPlayerIndex = (lobby.gameState.currentPlayerIndex + 1) % 4;
+
+        io.to(lobbyCode).emit('game-state', lobby.gameState);
+      }
+
+      await saveLobby(lobby);
+
+      socket.to(lobbyCode).emit('game-updated', { ...data, playerId });
+
+      await checkRoundEnd(lobby);
+      await checkAndTriggerBotTurn(lobbyCode);
+    } catch (err) {
+      console.error('Error during game action:', err);
+    }
   });
 
   // Disconnect
-  socket.on('disconnect', () => {
+  socket.on('disconnect', async () => {
     console.log(`Player disconnected: ${socket.id}`);
+    try {
+      const res = await pool.query(
+        'SELECT lobby_code, user_id FROM lobby_players WHERE socket_id = $1',
+        [socket.id]
+      );
+      if (res.rows.length > 0) {
+        const { lobby_code: lobbyCode, user_id: userId } = res.rows[0];
 
-    const lobbyCode = socketToLobby.get(socket.id);
-    if (lobbyCode) {
-      const lobby = lobbies.get(lobbyCode);
-      if (lobby) {
-        lobby.players = lobby.players.filter(p => p.socketId !== socket.id);
-        io.to(lobbyCode).emit('player-left', {
-          players: lobby.players.map(p => p.id)
-        });
+        // Delete player from lobby_players
+        await pool.query(
+          'DELETE FROM lobby_players WHERE lobby_code = $1 AND user_id = $2',
+          [lobbyCode, userId]
+        );
+
+        // Load lobby to see if it is empty
+        const lobby = await loadLobby(lobbyCode);
+        if (lobby) {
+          if (lobby.players.length === 0) {
+            // Delete lobby
+            await pool.query('DELETE FROM lobbies WHERE code = $1', [lobbyCode]);
+          } else {
+            io.to(lobbyCode).emit('player-left', {
+              players: lobby.players.map(p => p.id)
+            });
+          }
+        }
       }
-      socketToLobby.delete(socket.id);
+    } catch (err) {
+      console.error('Error on disconnect:', err);
     }
   });
 });
@@ -710,22 +926,32 @@ function authMiddleware(requiredRole: 'admin' | 'player' | 'spectator') {
 }
 
 // Admin-only route: delete lobby
-app.delete('/api/lobby/:code', authMiddleware('admin'), (req, res) => {
+app.delete('/api/lobby/:code', authMiddleware('admin'), async (req, res) => {
   const { code } = req.params;
-  lobbies.delete(code);
-  io.to(code).emit('lobby-deleted');
-  res.json({ message: 'Lobby deleted' });
+  try {
+    await pool.query('DELETE FROM lobbies WHERE code = $1', [code]);
+    io.to(code).emit('lobby-deleted');
+    res.json({ message: 'Lobby deleted' });
+  } catch (err) {
+    console.error('Error deleting lobby:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
 });
 
 // Admin-only route: list all lobbies
-app.get('/api/admin/lobbies', authMiddleware('admin'), (req: any, res: any) => {
-  const allLobbies = Array.from(lobbies.values()).map(l => ({
-    code: l.code,
-    isPrivate: l.isPrivate,
-    players: l.players.map(p => p.id),
-    status: l.status
-  }));
-  res.json({ lobbies: allLobbies });
+app.get('/api/admin/lobbies', authMiddleware('admin'), async (req: any, res: any) => {
+  try {
+    const result = await pool.query(`
+      SELECT l.code, l.is_private as "isPrivate", l.status, array_to_json(array_remove(array_agg(lp.user_id), NULL)) as players
+      FROM lobbies l
+      LEFT JOIN lobby_players lp ON l.code = lp.lobby_code
+      GROUP BY l.code, l.is_private, l.status
+    `);
+    res.json({ lobbies: result.rows });
+  } catch (err) {
+    console.error('Error fetching admin lobbies:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
 });
 
 // Health check
