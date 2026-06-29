@@ -14,8 +14,8 @@ export default function Scoreboard({
   team2Score = 0,
   round = 1,
   seepCount = { team1: 0, team2: 0 },
-  isOpen = true,
   onClose,
+}: ScoreboardProps) {
   const target = 100;
   const t1Pct = Math.min((team1Score / target) * 100, 100);
   const t2Pct = Math.min((team2Score / target) * 100, 100);
