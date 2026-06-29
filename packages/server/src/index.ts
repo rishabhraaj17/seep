@@ -94,7 +94,7 @@ function shuffle<T>(array: T[]): T[] {
 
 const rankToValue: Record<string, number> = {
   '2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7, '8': 8, '9': 9,
-  '10': 10, 'J': 11, 'Q': 12, 'K': 13, 'A': 14
+  '10': 10, 'J': 11, 'Q': 12, 'K': 13, 'A': 1,
 };
 
 // Card value for capture/sum checks
@@ -543,7 +543,7 @@ async function checkAndTriggerBotTurn(lobbyCode: string) {
           currentLobby.gameState.capturedCards[team].push(...captured);
           currentLobby.gameState.lastCaptureTeam = currentPlayer.team === 2 ? 2 : 1;
 
-          const isSeep = currentLobby.gameState.floor.length === 0 && hand.length > 1;
+          const isSeep = currentLobby.gameState.floor.length === 0 && currentLobby.gameState.houses.length === 0 && hand.length > 1;
           if (isSeep) {
             currentLobby.gameState.seepCount[team] += 1;
             if (currentLobby.gameState.seepCount[team] >= 3) {
@@ -1086,7 +1086,7 @@ io.on('connection', (socket: Socket) => {
         lobby.gameState.capturedCards[team].push(...captured);
         lobby.gameState.lastCaptureTeam = currentPlayer.team === 2 ? 2 : 1;
 
-        const isSeep = lobby.gameState.floor.length === 0 && hand.length > 1;
+        const isSeep = lobby.gameState.floor.length === 0 && lobby.gameState.houses.length === 0 && hand.length > 1;
         if (isSeep) {
           lobby.gameState.seepCount[team] += 1;
           if (lobby.gameState.seepCount[team] >= 3) {
@@ -1187,8 +1187,13 @@ io.on('connection', (socket: Socket) => {
               return;
             }
 
-            if (targetedHouse.createdBy === playerId) {
-              socket.emit('error-message', { message: 'You cannot distort a house that you built yourself' });
+            const creatorIndex = lobby.players.findIndex(p => p.id === targetedHouse.createdBy);
+            const playerIndex = lobby.players.findIndex(p => p.id === playerId);
+            const creatorTeam = creatorIndex !== -1 ? lobby.players[creatorIndex]?.team : undefined;
+            const playerTeam = playerIndex !== -1 ? lobby.players[playerIndex]?.team : undefined;
+
+            if (creatorTeam === playerTeam) {
+              socket.emit('error-message', { message: 'You cannot distort a house built by your own team' });
               await client.query('ROLLBACK');
               return;
             }

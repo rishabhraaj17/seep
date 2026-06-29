@@ -15,11 +15,11 @@ interface BiddingPhaseProps {
 
 const rankToValue: Record<string, number> = {
   '2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7, '8': 8, '9': 9,
-  '10': 10, 'J': 11, 'Q': 12, 'K': 13, 'A': 14,
+  '10': 10, 'J': 11, 'Q': 12, 'K': 13, 'A': 1,
 };
 
 const rankLabel: Record<number, string> = {
-  9: '9', 10: '10', 11: 'J', 12: 'Q', 13: 'K', 14: 'A',
+  9: '9', 10: '10', 11: 'J', 12: 'Q', 13: 'K',
 };
 
 export default function BiddingPhase({ socket, userId, lobbyCode, hand, floorCards, onBidComplete }: BiddingPhaseProps) {
@@ -31,8 +31,8 @@ export default function BiddingPhase({ socket, userId, lobbyCode, hand, floorCar
   useEffect(() => {
     socket.on('bid-placed', ({ bid, playerId }: { bid: number; playerId: string }) => {
       setWaitMsg(playerId === userId
-        ? `You bid ${bid === 14 ? 'A' : bid}. Starting game...`
-        : `A bid of ${bid === 14 ? 'A' : bid} was placed. Get ready!`
+        ? `You bid ${rankLabel[bid]}. Starting game...`
+        : `A bid of ${rankLabel[bid]} was placed. Get ready!`
       );
       setTimeout(() => onBidComplete(), 1400);
     });
@@ -50,7 +50,7 @@ export default function BiddingPhase({ socket, userId, lobbyCode, hand, floorCar
     if (matching) { setSelectedBid(bid); setSelectedCard(matching); }
   };
 
-  const availableBids = [9, 10, 11, 12, 13, 14].filter(b => hand.some(c => rankToValue[c.rank] === b));
+  const availableBids = [9, 10, 11, 12, 13].filter(b => hand.some(c => rankToValue[c.rank] === b));
 
   return (
     <div className="relative min-h-screen flex items-center justify-center p-4 overflow-hidden">
@@ -79,7 +79,7 @@ export default function BiddingPhase({ socket, userId, lobbyCode, hand, floorCar
               </div>
               <h1 className="font-display text-2xl sm:text-3xl font-bold text-gold-gradient">Place Your Bid</h1>
               <p className="text-sm mt-2" style={{ color: 'rgba(245,240,232,0.4)' }}>
-                Select a card from your hand (9–A) to declare your bid value
+                Select a card from your hand (9–K) to declare your bid value
               </p>
             </div>
 
@@ -131,7 +131,7 @@ export default function BiddingPhase({ socket, userId, lobbyCode, hand, floorCar
               <div className="flex justify-center gap-2 sm:gap-3 flex-wrap min-h-[100px] items-center">
                 {hand.length > 0 ? hand.map(card => {
                   const value = rankToValue[card.rank];
-                  const canBid = [9, 10, 11, 12, 13, 14].includes(value);
+                  const canBid = [9, 10, 11, 12, 13].includes(value);
                   const isChosen = selectedCard?.id === card.id;
                   return (
                     <motion.div key={card.id}
@@ -154,7 +154,7 @@ export default function BiddingPhase({ socket, userId, lobbyCode, hand, floorCar
               </div>
               {hand.length > 0 && availableBids.length === 0 && (
                 <p className="text-center text-xs mt-2" style={{ color: '#f1948a' }}>
-                  ⚠️ You have no cards with values 9–A
+                  ⚠️ You have no cards with values 9–K
                 </p>
               )}
             </div>
@@ -168,8 +168,8 @@ export default function BiddingPhase({ socket, userId, lobbyCode, hand, floorCar
                 </span>
                 <div className="divider-gold flex-1" />
               </div>
-              <div className="grid grid-cols-6 gap-2 max-w-sm mx-auto">
-                {[9, 10, 11, 12, 13, 14].map(bid => {
+              <div className="grid grid-cols-5 gap-2 max-w-sm mx-auto">
+                {[9, 10, 11, 12, 13].map(bid => {
                   const avail = availableBids.includes(bid);
                   const chosen = selectedBid === bid;
                   return (
