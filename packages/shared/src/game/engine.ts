@@ -1,5 +1,5 @@
 import type { Card, House, FloorCard, GameState, Player } from '../index';
-import { createDeck, getPointValue } from '../index';
+import { createDeck, getPointValue, getCardNumericValue } from '../index';
 
 // Game constants
 export const HOUSE_VALUES = [9, 10, 11, 12, 13, 14] as const;
@@ -72,13 +72,11 @@ export function canSumToTarget(cards: Card[], target: number): boolean {
   return false;
 }
 
+export { getCardNumericValue };
+
 // Get numeric value of a card for sum calculations
 export function getCardValue(card: Card): number {
-  if (card.rank === 'A') return 1;
-  if (card.rank === 'J') return 11;
-  if (card.rank === 'Q') return 12;
-  if (card.rank === 'K') return 13;
-  return parseInt(card.rank, 10);
+  return getCardNumericValue(card);
 }
 
 // Validate capture action
@@ -188,5 +186,6 @@ export function createInitialGameState(lobbyCode: string): GameState {
     capturedCards: { team1: [], team2: [] },
     seepCount: { team1: 0, team2: 0 },
     gamePhase: 'bidding',
+    firstTurnCompleted: [],
   };
 }

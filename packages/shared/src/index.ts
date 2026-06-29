@@ -55,6 +55,7 @@ export interface GameState {
     fulfilled: boolean;
   };
   lastCaptureTeam?: 1 | 2;
+  firstTurnCompleted: string[];
 }
 
 export interface LobbyAction {
@@ -84,25 +85,21 @@ export interface AuthPayload {
   role?: 'player' | 'spectator' | 'admin';
 }
 
+export function getCardNumericValue(card: Card): number {
+  if (card.rank === 'A') return 1;
+  if (card.rank === 'J') return 11;
+  if (card.rank === 'Q') return 12;
+  if (card.rank === 'K') return 13;
+  return parseInt(card.rank, 10);
+}
+
 // Helper functions for card point calculation
 export function getPointValue(card: Card): number {
-  // 10 of Diamonds (Dehla) = 6 points
-  if (card.rank === '10' && card.suit === 'diamonds') {
-    return 6;
-  }
-  // Ace of Spades = 2 points (both Ace and Spade)
-  if (card.rank === 'A' && card.suit === 'spades') {
-    return 2;
-  }
-  // All other Aces = 1 point each
-  if (card.rank === 'A') {
-    return 1;
-  }
-  // All Spades (except Ace) = 1 point each
   if (card.suit === 'spades') {
-    return 1;
+    return getCardNumericValue(card);
   }
-  // All other cards = 0 points
+  if (card.rank === 'A') return 1;
+  if (card.rank === '10' && card.suit === 'diamonds') return 6;
   return 0;
 }
 

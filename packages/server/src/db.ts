@@ -66,8 +66,13 @@ export async function initDatabase() {
         game_phase VARCHAR(20) NOT NULL CHECK (game_phase IN ('bidding', 'playing', 'roundEnd', 'gameEnd')),
         bid JSONB,
         last_capture_team INTEGER CHECK (last_capture_team IN (1, 2)),
+        first_turn_completed JSONB NOT NULL DEFAULT '[]'::jsonb,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
+    `);
+
+    await client.query(`
+      ALTER TABLE game_states ADD COLUMN IF NOT EXISTS first_turn_completed JSONB NOT NULL DEFAULT '[]'::jsonb;
     `);
 
     await client.query('COMMIT');

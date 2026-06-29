@@ -37,4 +37,5 @@ export interface GameState {
     fulfilled: boolean;
   };
   lastCaptureTeam?: 1 | 2;
+  firstTurnCompleted: string[];
 }

@@ -43,6 +43,7 @@ interface GameState {
     fulfilled: boolean;
   };
   lastCaptureTeam?: 1 | 2;
+  firstTurnCompleted: string[];
 }
 
 interface LobbyState {
@@ -56,10 +57,11 @@ interface LobbyState {
 
 // Helper functions
 function getPointValue(card: Card): number {
-  if (card.rank === '10' && card.suit === 'diamonds') return 6;
-  if (card.rank === 'A' && card.suit === 'spades') return 2;
+  if (card.suit === 'spades') {
+    return getCardNumericValue(card);
+  }
   if (card.rank === 'A') return 1;
-  if (card.suit === 'spades') return 1;
+  if (card.rank === '10' && card.suit === 'diamonds') return 6;
   return 0;
 }
 
@@ -123,6 +125,12 @@ function calculatePoints(cards: Card[]): number {
   return cards.reduce((sum, card) => sum + getPointValue(card), 0);
 }
 
+function checkIfPukta(house: House): boolean {
+  if (house.value >= 13) return true;
+  const cardsOfHouseValue = house.cards.filter(c => getCardNumericValue(c) === house.value);
+  return cardsOfHouseValue.length >= 2;
+}
+
 // Bot helper to find capturable cards
 function findCapturableCardsForBot(card: Card, floor: Card[]): Card[] {
   const cardValue = getCardNumericValue(card);
@@ -179,7 +187,7 @@ async function loadLobby(code: string, client?: any): Promise<LobbyState | null>
   };
 
   const gsRes = await db.query(
-    'SELECT floor, houses, hands, current_player_index, round_number, team_scores, captured_cards, team_seeps, game_phase, bid, last_capture_team FROM game_states WHERE lobby_code = $1',
+    'SELECT floor, houses, hands, current_player_index, round_number, team_scores, captured_cards, team_seeps, game_phase, bid, last_capture_team, first_turn_completed FROM game_states WHERE lobby_code = $1',
     [code]
   );
 
@@ -197,6 +205,7 @@ async function loadLobby(code: string, client?: any): Promise<LobbyState | null>
       gamePhase: gsRow.game_phase,
       bid: gsRow.bid || undefined,
       lastCaptureTeam: gsRow.last_capture_team || undefined,
+      firstTurnCompleted: gsRow.first_turn_completed || [],
     };
     const hands = new Map<string, Card[]>();
     if (gsRow.hands) {
@@ -235,8 +244,8 @@ async function saveLobby(lobby: LobbyState, client?: any): Promise<void> {
       await db.query(
         `INSERT INTO game_states (
           lobby_code, floor, houses, hands, current_player_index, round_number, 
-          team_scores, captured_cards, team_seeps, game_phase, bid, last_capture_team
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+          team_scores, captured_cards, team_seeps, game_phase, bid, last_capture_team, first_turn_completed
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
          ON CONFLICT (lobby_code) DO UPDATE SET
           floor = EXCLUDED.floor,
           houses = EXCLUDED.houses,
@@ -249,6 +258,7 @@ async function saveLobby(lobby: LobbyState, client?: any): Promise<void> {
           game_phase = EXCLUDED.game_phase,
           bid = EXCLUDED.bid,
           last_capture_team = EXCLUDED.last_capture_team,
+          first_turn_completed = EXCLUDED.first_turn_completed,
           updated_at = CURRENT_TIMESTAMP`,
         [
           lobby.code,
@@ -263,6 +273,7 @@ async function saveLobby(lobby: LobbyState, client?: any): Promise<void> {
           lobby.gameState.gamePhase,
           lobby.gameState.bid ? JSON.stringify(lobby.gameState.bid) : null,
           lobby.gameState.lastCaptureTeam || null,
+          JSON.stringify(lobby.gameState.firstTurnCompleted || []),
         ]
       );
     }
@@ -299,11 +310,17 @@ async function checkRoundEnd(lobby: LobbyState) {
   }
 
   if (allEmpty) {
-    // Award remaining floor cards to the team that made the last capture
+    // Award remaining floor cards and houses to the team that made the last capture
     const lastTeam = lobby.gameState.lastCaptureTeam === 2 ? 'team2' : 'team1';
     if (lobby.gameState.floor.length > 0) {
       lobby.gameState.capturedCards[lastTeam].push(...lobby.gameState.floor);
       lobby.gameState.floor = [];
+    }
+    if (lobby.gameState.houses.length > 0) {
+      lobby.gameState.houses.forEach(house => {
+        lobby.gameState!.capturedCards[lastTeam].push(...house.cards);
+      });
+      lobby.gameState.houses = [];
     }
 
     const team1Captures = lobby.gameState.capturedCards.team1;
@@ -315,6 +332,24 @@ async function checkRoundEnd(lobby: LobbyState) {
     lobby.gameState.teamScores.team1 += team1RoundPoints;
     lobby.gameState.teamScores.team2 += team2RoundPoints;
 
+    // Seep points calculation and cancellation
+    const team1Seeps = lobby.gameState.seepCount.team1;
+    const team2Seeps = lobby.gameState.seepCount.team2;
+
+    let finalTeam1Seeps = 0;
+    let finalTeam2Seeps = 0;
+    if (team1Seeps > team2Seeps) {
+      finalTeam1Seeps = team1Seeps - team2Seeps;
+    } else if (team2Seeps > team1Seeps) {
+      finalTeam2Seeps = team2Seeps - team1Seeps;
+    }
+
+    lobby.gameState.teamScores.team1 += finalTeam1Seeps * 50;
+    lobby.gameState.teamScores.team2 += finalTeam2Seeps * 50;
+
+    // Reset seep counts
+    lobby.gameState.seepCount = { team1: 0, team2: 0 };
+
     if (lobby.gameState.teamScores.team1 >= 100 || lobby.gameState.teamScores.team2 >= 100) {
       lobby.gameState.gamePhase = 'gameEnd';
     } else {
@@ -322,16 +357,31 @@ async function checkRoundEnd(lobby: LobbyState) {
       lobby.gameState.roundNumber += 1;
       lobby.gameState.gamePhase = 'bidding';
 
-      const deck = shuffle(createDeck());
-      let deckIndex = 0;
+      let deck: Card[] = [];
+      let floorCards: Card[] = [];
+      let hands: Card[][] = [];
+      let redeal = true;
 
-      const floorCards = deck.slice(deckIndex, 4);
-      deckIndex += 4;
+      while (redeal) {
+        deck = shuffle(createDeck());
+        let deckIndex = 0;
+        floorCards = deck.slice(deckIndex, 4);
+        deckIndex += 4;
 
-      const hands: Card[][] = [];
-      for (let i = 0; i < 4; i++) {
-        hands.push(deck.slice(deckIndex, deckIndex + 12));
-        deckIndex += 12;
+        hands = [];
+        for (let i = 0; i < 4; i++) {
+          hands.push(deck.slice(deckIndex, deckIndex + 12));
+          deckIndex += 12;
+        }
+
+        // Caller (player 0) constraint check
+        const hasCardGe9 = hands[0].some(c => {
+          const val = rankToValue[c.rank];
+          return val >= 9 && val <= 14;
+        });
+        if (hasCardGe9) {
+          redeal = false;
+        }
       }
 
       lobby.hands.clear();
@@ -343,13 +393,15 @@ async function checkRoundEnd(lobby: LobbyState) {
       lobby.gameState.capturedCards = { team1: [], team2: [] };
       lobby.gameState.bid = undefined;
       lobby.gameState.currentPlayerIndex = 0;
+      lobby.gameState.firstTurnCompleted = [];
 
       // Broadcast new deal cards privately to all
       lobby.players.forEach((p, i) => {
+        const visibleHand = (i === 0) ? hands[i] : hands[i].slice(0, 4);
         io.to(p.socketId).emit('deal-cards', {
           lobbyCode: lobby.code,
           floor: floorCards,
-          hand: hands[i],
+          hand: visibleHand,
           playerIndex: i,
           biddingPlayerIndex: 0,
         });
@@ -409,42 +461,116 @@ async function checkAndTriggerBotTurn(lobbyCode: string) {
         const hand = currentLobby.hands?.get(currentPlayer.id) || [];
         if (hand.length === 0) return;
 
-        let playAction = 'THROW';
-        let selectedCard = hand[0];
-        let targetCards: Card[] = [];
+        const hasCompletedFirstTurn = currentLobby.gameState.firstTurnCompleted.includes(currentPlayer.id);
+        const playerIndex = currentLobby.gameState.currentPlayerIndex;
 
-        // Check if bot can capture
-        for (const card of hand) {
-          const capturable = findCapturableCardsForBot(card, currentLobby.gameState.floor);
-          if (capturable.length > 0) {
-            playAction = 'CAPTURE';
-            selectedCard = card;
-            targetCards = capturable;
-            break;
+        // Enforce visible hand limit
+        const visibleHand = (playerIndex === 0 || hasCompletedFirstTurn) ? hand : hand.slice(0, 4);
+        if (visibleHand.length === 0) return;
+
+        let playAction = 'THROW';
+        let selectedCard = visibleHand[0];
+        let targetCards: Card[] = [];
+        let houseValue: 9 | 10 | 11 | 12 | 13 | 14 | undefined = undefined;
+
+        // Restriction: Restrict caller's first action to the called house value
+        const isCallerFirstTurn = (playerIndex === 0 && !hasCompletedFirstTurn);
+        if (isCallerFirstTurn) {
+          const bidVal = currentLobby.gameState.bid!.value as 9 | 10 | 11 | 12 | 13 | 14;
+          const bidCard = visibleHand.find(c => getCardNumericValue(c) === bidVal);
+          if (bidCard) {
+            selectedCard = bidCard;
+            const capturable = findCapturableCardsForBot(bidCard, currentLobby.gameState.floor);
+            const matchingHouse = currentLobby.gameState.houses.find(h => h.value === bidVal);
+            if (capturable.length > 0 || matchingHouse) {
+              playAction = 'CAPTURE';
+              targetCards = capturable;
+            } else {
+              playAction = 'BUILD_HOUSE';
+              targetCards = [];
+              houseValue = bidVal;
+            }
+          } else {
+            selectedCard = visibleHand[0];
+          }
+        } else {
+          // Regular bot logic
+          // 1. Try to capture a matching house
+          let houseCaptured = false;
+          for (const card of visibleHand) {
+            const cardVal = getCardNumericValue(card);
+            const matchingHouse = currentLobby.gameState.houses.find(h => h.value === cardVal);
+            if (matchingHouse) {
+              playAction = 'CAPTURE';
+              selectedCard = card;
+              targetCards = findCapturableCardsForBot(card, currentLobby.gameState.floor);
+              houseCaptured = true;
+              break;
+            }
+          }
+
+          if (!houseCaptured) {
+            // 2. Try to capture loose cards
+            for (const card of visibleHand) {
+              const capturable = findCapturableCardsForBot(card, currentLobby.gameState.floor);
+              if (capturable.length > 0) {
+                playAction = 'CAPTURE';
+                selectedCard = card;
+                targetCards = capturable;
+                break;
+              }
+            }
           }
         }
 
         const team = currentPlayer.team === 1 ? 'team1' : 'team2';
 
         if (playAction === 'CAPTURE') {
+          const cardValue = getCardNumericValue(selectedCard);
+          const matchingHouses = currentLobby.gameState.houses.filter(h => h.value === cardValue);
+          const nonMatchingHouses = currentLobby.gameState.houses.filter(h => h.value !== cardValue);
+          
+          const capturedHouseCards: Card[] = [];
+          matchingHouses.forEach(h => {
+            capturedHouseCards.push(...h.cards);
+          });
+          currentLobby.gameState.houses = nonMatchingHouses;
+
           targetCards.forEach(c => {
             currentLobby.gameState!.floor = currentLobby.gameState!.floor.filter(fc => fc.id !== c.id);
           });
-          const captured = [selectedCard, ...targetCards];
+          const captured = [selectedCard, ...capturedHouseCards, ...targetCards];
           currentLobby.gameState.capturedCards[team].push(...captured);
           currentLobby.gameState.lastCaptureTeam = currentPlayer.team === 2 ? 2 : 1;
 
-          const isSeep = currentLobby.gameState.floor.length === 0;
+          const isSeep = currentLobby.gameState.floor.length === 0 && hand.length > 1;
           if (isSeep) {
             currentLobby.gameState.seepCount[team] += 1;
-            currentLobby.gameState.teamScores[team] += 50;
+            if (currentLobby.gameState.seepCount[team] >= 3) {
+              currentLobby.gameState.seepCount[team] = 0;
+            }
             io.to(currentLobby.code).emit('seep-executed', { playerId: currentPlayer.id });
           }
+        } else if (playAction === 'BUILD_HOUSE') {
+          const newHouse = {
+            id: `house-${Date.now()}`,
+            cards: [selectedCard],
+            value: houseValue!,
+            isPukta: houseValue! >= 13,
+            createdBy: currentPlayer.id,
+          };
+          currentLobby.gameState.houses.push(newHouse);
         } else {
           currentLobby.gameState.floor.push(selectedCard);
         }
 
         currentLobby.hands?.set(currentPlayer.id, hand.filter(c => c.id !== selectedCard.id));
+
+        // Mark first turn completed
+        if (!hasCompletedFirstTurn) {
+          currentLobby.gameState.firstTurnCompleted.push(currentPlayer.id);
+        }
+
         currentLobby.gameState.currentPlayerIndex = (currentLobby.gameState.currentPlayerIndex + 1) % 4;
 
         await saveLobby(currentLobby);
@@ -699,10 +825,14 @@ io.on('connection', (socket: Socket) => {
       const playerIndex = lobby.players.findIndex(p => p.id === userId);
       if (playerIndex === -1) return;
 
+      const hand = lobby.hands.get(userId) || [];
+      const hasCompletedFirstTurn = lobby.gameState.firstTurnCompleted.includes(userId);
+      const visibleHand = (playerIndex === 0 || hasCompletedFirstTurn) ? hand : hand.slice(0, 4);
+
       socket.emit('deal-cards', {
         lobbyCode,
         floor: lobby.gameState.floor,
-        hand: lobby.hands.get(userId) || [],
+        hand: visibleHand,
         playerIndex,
         biddingPlayerIndex: 0,
       });
@@ -724,16 +854,31 @@ io.on('connection', (socket: Socket) => {
         lobby.status = 'bidding';
 
         // Deal cards
-        const deck = shuffle(createDeck());
-        let deckIndex = 0;
+        let deck: Card[] = [];
+        let floorCards: Card[] = [];
+        let hands: Card[][] = [];
+        let redeal = true;
 
-        const floorCards = deck.slice(deckIndex, 4);
-        deckIndex += 4;
+        while (redeal) {
+          deck = shuffle(createDeck());
+          let deckIndex = 0;
+          floorCards = deck.slice(deckIndex, 4);
+          deckIndex += 4;
 
-        const hands: Card[][] = [];
-        for (let i = 0; i < 4; i++) {
-          hands.push(deck.slice(deckIndex, deckIndex + 12));
-          deckIndex += 12;
+          hands = [];
+          for (let i = 0; i < 4; i++) {
+            hands.push(deck.slice(deckIndex, deckIndex + 12));
+            deckIndex += 12;
+          }
+
+          // Caller (player 0) constraint check
+          const hasCardGe9 = hands[0].some(c => {
+            const val = rankToValue[c.rank];
+            return val >= 9 && val <= 14;
+          });
+          if (hasCardGe9) {
+            redeal = false;
+          }
         }
 
         lobby.hands = new Map();
@@ -753,6 +898,7 @@ io.on('connection', (socket: Socket) => {
           gamePhase: 'bidding',
           bid: undefined,
           lastCaptureTeam: undefined,
+          firstTurnCompleted: [],
         };
 
         await saveLobby(lobby);
@@ -760,10 +906,11 @@ io.on('connection', (socket: Socket) => {
         io.to(lobbyCode).emit('game-started', { lobbyCode });
 
         lobby.players.forEach((p, i) => {
+          const visibleHand = (i === 0) ? hands[i] : hands[i].slice(0, 4);
           io.to(p.socketId).emit('deal-cards', {
             lobbyCode,
             floor: floorCards,
-            hand: hands[i],
+            hand: visibleHand,
             playerIndex: i,
             biddingPlayerIndex: 0,
           });
@@ -865,69 +1012,255 @@ io.on('connection', (socket: Socket) => {
         return;
       }
 
-      // Verify the played card is actually in the player's hand
+      // Verify the played card is actually in the player's visible hand
       const hand = lobby.hands.get(playerId) || [];
-      if (!hand.some(c => c.id === card.id)) {
+      const hasCompletedFirstTurn = lobby.gameState.firstTurnCompleted.includes(playerId);
+      const playerIndex = lobby.players.findIndex(p => p.id === playerId);
+      const visibleHand = (playerIndex === 0 || hasCompletedFirstTurn) ? hand : hand.slice(0, 4);
+
+      if (!visibleHand.some(c => c.id === card.id)) {
         socket.emit('error-message', { message: 'Card not in hand' });
         await client.query('ROLLBACK');
         return;
       }
 
+      // Restriction: Restrict caller's first action to the called house value
+      const isCallerFirstTurn = (playerIndex === 0 && !lobby.gameState.firstTurnCompleted.includes(playerId));
+      if (isCallerFirstTurn) {
+        const bidVal = lobby.gameState.bid?.value;
+        if (bidVal !== undefined) {
+          if (action === 'THROW') {
+            socket.emit('error-message', { message: 'Your first turn must be to capture or build the called house value' });
+            await client.query('ROLLBACK');
+            return;
+          } else if (action === 'CAPTURE') {
+            if (getCardNumericValue(card) !== bidVal) {
+              socket.emit('error-message', { message: `Your first capture must be with a card of the bid value (${bidVal})` });
+              await client.query('ROLLBACK');
+              return;
+            }
+          } else if (action === 'BUILD_HOUSE') {
+            const buildVal = payload.houseValue;
+            if (buildVal !== bidVal) {
+              socket.emit('error-message', { message: `Your first house build must be of the bid value (${bidVal})` });
+              await client.query('ROLLBACK');
+              return;
+            }
+          }
+        }
+      }
+
       if (action === 'CAPTURE') {
         const cardValue = getCardNumericValue(card);
-        const canCapture = canSumTo(cardValue, targetCards || []);
 
-        if (!canCapture) {
-          socket.emit('error-message', { message: 'Invalid capture — cards don\'t sum to your card value' });
+        // Find if there is any house of this value
+        const matchingHouses = lobby.gameState.houses.filter(h => h.value === cardValue);
+        const nonMatchingHouses = lobby.gameState.houses.filter(h => h.value !== cardValue);
+        
+        const capturedHouseCards: Card[] = [];
+        matchingHouses.forEach(h => {
+          capturedHouseCards.push(...h.cards);
+        });
+        lobby.gameState.houses = nonMatchingHouses;
+
+        if (targetCards && targetCards.length > 0) {
+          const canCapture = canSumTo(cardValue, targetCards);
+          if (!canCapture) {
+            socket.emit('error-message', { message: 'Invalid capture — cards don\'t sum to your card value' });
+            await client.query('ROLLBACK');
+            return;
+          }
+
+          // Remove target cards from floor
+          (targetCards || []).forEach((c: Card) => {
+            lobby.gameState!.floor = lobby.gameState!.floor.filter(fc => fc.id !== c.id);
+          });
+        } else if (matchingHouses.length === 0) {
+          socket.emit('error-message', { message: 'No cards selected to capture' });
           await client.query('ROLLBACK');
           return;
         }
 
         const team = currentPlayer.team === 1 ? 'team1' : 'team2';
-
-        const captured = [card, ...(targetCards || [])];
-        (targetCards || []).forEach((c: Card) => {
-          lobby.gameState!.floor = lobby.gameState!.floor.filter(fc => fc.id !== c.id);
-        });
+        const captured = [card, ...capturedHouseCards, ...(targetCards || [])];
         lobby.gameState.capturedCards[team].push(...captured);
         lobby.gameState.lastCaptureTeam = currentPlayer.team === 2 ? 2 : 1;
 
-        const isSeep = lobby.gameState.floor.length === 0;
+        const isSeep = lobby.gameState.floor.length === 0 && hand.length > 1;
         if (isSeep) {
           lobby.gameState.seepCount[team] += 1;
-          lobby.gameState.teamScores[team] += 50;
+          if (lobby.gameState.seepCount[team] >= 3) {
+            lobby.gameState.seepCount[team] = 0;
+          }
           io.to(lobbyCode).emit('seep-executed', { playerId });
         }
 
         lobby.hands.set(playerId, hand.filter(c => c.id !== card.id));
-        lobby.gameState.currentPlayerIndex = (lobby.gameState.currentPlayerIndex + 1) % 4;
 
+        // Mark first turn completed
+        if (!hasCompletedFirstTurn) {
+          lobby.gameState.firstTurnCompleted.push(playerId);
+          if (playerIndex !== 0) {
+            const updatedHand = lobby.hands.get(playerId) || [];
+            socket.emit('deal-cards', {
+              lobbyCode,
+              floor: lobby.gameState.floor,
+              hand: updatedHand,
+              playerIndex,
+              biddingPlayerIndex: 0,
+            });
+          }
+        }
+
+        lobby.gameState.currentPlayerIndex = (lobby.gameState.currentPlayerIndex + 1) % 4;
         io.to(lobbyCode).emit('game-state', lobby.gameState);
       } else if (action === 'THROW') {
         lobby.gameState.floor.push(card);
 
         lobby.hands.set(playerId, hand.filter(c => c.id !== card.id));
-        lobby.gameState.currentPlayerIndex = (lobby.gameState.currentPlayerIndex + 1) % 4;
 
+        // Mark first turn completed
+        if (!hasCompletedFirstTurn) {
+          lobby.gameState.firstTurnCompleted.push(playerId);
+          if (playerIndex !== 0) {
+            const updatedHand = lobby.hands.get(playerId) || [];
+            socket.emit('deal-cards', {
+              lobbyCode,
+              floor: lobby.gameState.floor,
+              hand: updatedHand,
+              playerIndex,
+              biddingPlayerIndex: 0,
+            });
+          }
+        }
+
+        lobby.gameState.currentPlayerIndex = (lobby.gameState.currentPlayerIndex + 1) % 4;
         io.to(lobbyCode).emit('game-state', lobby.gameState);
       } else if (action === 'BUILD_HOUSE') {
         const houseValue = payload.houseValue as 9 | 10 | 11 | 12 | 13 | 14;
-        const newHouse = {
-          id: `house-${Date.now()}`,
-          cards: [card, ...(targetCards || [])],
-          value: houseValue,
-          isPukta: false,
-          createdBy: playerId,
-        };
 
-        (targetCards || []).forEach((c: Card) => {
-          lobby.gameState!.floor = lobby.gameState!.floor.filter(fc => fc.id !== c.id);
-        });
-        lobby.gameState.houses.push(newHouse);
+        if (!hand.some(c => getCardNumericValue(c) === houseValue)) {
+          socket.emit('error-message', { message: 'You must hold a card of the house value in hand to build it' });
+          await client.query('ROLLBACK');
+          return;
+        }
+
+        const targetedHouseIndex = lobby.gameState.houses.findIndex(h => 
+          h.cards.some(hc => (targetCards || []).some(tc => tc.id === hc.id))
+        );
+
+        if (targetedHouseIndex === -1) {
+          if (lobby.gameState.houses.length >= 2) {
+            socket.emit('error-message', { message: 'Maximum of 2 houses on the board exceeded' });
+            await client.query('ROLLBACK');
+            return;
+          }
+
+          const targetSum = (targetCards || []).reduce((sum, c) => sum + getCardNumericValue(c), 0);
+          if (getCardNumericValue(card) + targetSum !== houseValue) {
+            socket.emit('error-message', { message: `Played card and target cards must sum to ${houseValue}` });
+            await client.query('ROLLBACK');
+            return;
+          }
+
+          const newHouse = {
+            id: `house-${Date.now()}`,
+            cards: [card, ...(targetCards || [])],
+            value: houseValue,
+            isPukta: houseValue >= 13,
+            createdBy: playerId,
+          };
+
+          (targetCards || []).forEach((c: Card) => {
+            lobby.gameState!.floor = lobby.gameState!.floor.filter(fc => fc.id !== c.id);
+          });
+          lobby.gameState.houses.push(newHouse);
+
+        } else {
+          const targetedHouse = lobby.gameState.houses[targetedHouseIndex];
+          const isDistortion = targetedHouse.value !== houseValue;
+
+          if (isDistortion) {
+            if (targetedHouse.isPukta || targetedHouse.value === 13) {
+              socket.emit('error-message', { message: 'Cannot distort a cemented (Pukta) house or a house of value 13' });
+              await client.query('ROLLBACK');
+              return;
+            }
+
+            if (targetedHouse.createdBy === playerId) {
+              socket.emit('error-message', { message: 'You cannot distort a house that you built yourself' });
+              await client.query('ROLLBACK');
+              return;
+            }
+
+            const extraTargetCards = (targetCards || []).filter(tc => !targetedHouse.cards.some(hc => hc.id === tc.id));
+            const extraSum = extraTargetCards.reduce((sum, c) => sum + getCardNumericValue(c), 0);
+
+            if (getCardNumericValue(card) + targetedHouse.value + extraSum !== houseValue) {
+              socket.emit('error-message', { message: `Played card, house value, and extra cards must sum to ${houseValue}` });
+              await client.query('ROLLBACK');
+              return;
+            }
+
+            targetedHouse.value = houseValue;
+            targetedHouse.cards.push(card, ...extraTargetCards);
+            targetedHouse.createdBy = playerId;
+            targetedHouse.isPukta = checkIfPukta(targetedHouse);
+
+            extraTargetCards.forEach((c: Card) => {
+              lobby.gameState!.floor = lobby.gameState!.floor.filter(fc => fc.id !== c.id);
+            });
+
+          } else {
+            const creatorPlayer = lobby.players.find(p => p.id === targetedHouse.createdBy);
+            const playerIndex = lobby.players.findIndex(p => p.id === playerId);
+            const creatorIndex = lobby.players.findIndex(p => p.id === targetedHouse.createdBy);
+            
+            const playerTeam = lobby.players[playerIndex]?.team;
+            const creatorTeam = creatorIndex !== -1 ? lobby.players[creatorIndex]?.team : undefined;
+
+            if (creatorTeam && creatorTeam !== playerTeam) {
+              socket.emit('error-message', { message: 'Cannot contribute to opponent\'s house without distorting it' });
+              await client.query('ROLLBACK');
+              return;
+            }
+
+            const extraTargetCards = (targetCards || []).filter(tc => !targetedHouse.cards.some(hc => hc.id === tc.id));
+            const extraSum = extraTargetCards.reduce((sum, c) => sum + getCardNumericValue(c), 0);
+
+            if (getCardNumericValue(card) + extraSum !== houseValue && getCardNumericValue(card) !== houseValue) {
+              socket.emit('error-message', { message: 'Contribution must equal the house value' });
+              await client.query('ROLLBACK');
+              return;
+            }
+
+            targetedHouse.cards.push(card, ...extraTargetCards);
+            targetedHouse.isPukta = checkIfPukta(targetedHouse);
+
+            extraTargetCards.forEach((c: Card) => {
+              lobby.gameState!.floor = lobby.gameState!.floor.filter(fc => fc.id !== c.id);
+            });
+          }
+        }
 
         lobby.hands.set(playerId, hand.filter(c => c.id !== card.id));
-        lobby.gameState.currentPlayerIndex = (lobby.gameState.currentPlayerIndex + 1) % 4;
+        
+        // Mark first turn completed
+        if (!hasCompletedFirstTurn) {
+          lobby.gameState.firstTurnCompleted.push(playerId);
+          if (playerIndex !== 0) {
+            const updatedHand = lobby.hands.get(playerId) || [];
+            socket.emit('deal-cards', {
+              lobbyCode,
+              floor: lobby.gameState.floor,
+              hand: updatedHand,
+              playerIndex,
+              biddingPlayerIndex: 0,
+            });
+          }
+        }
 
+        lobby.gameState.currentPlayerIndex = (lobby.gameState.currentPlayerIndex + 1) % 4;
         io.to(lobbyCode).emit('game-state', lobby.gameState);
       }
 

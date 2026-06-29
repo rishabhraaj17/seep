@@ -85,6 +85,7 @@ export default function GameScreen({
         currentPlayerIndex: biddingPlayerIndex, roundNumber: 1,
         teamScores: { team1: 0, team2: 0 }, capturedCards: { team1: [], team2: [] },
         seepCount: { team1: 0, team2: 0 }, gamePhase: 'bidding',
+        firstTurnCompleted: [],
       });
       setIsBidding(true);
     });
