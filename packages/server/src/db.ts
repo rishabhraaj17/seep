@@ -73,6 +73,9 @@ export async function initDatabase() {
         hand_sizes JSONB NOT NULL DEFAULT '{}'::jsonb,
         deck JSONB NOT NULL DEFAULT '[]'::jsonb,
         ask_above_8 BOOLEAN NOT NULL DEFAULT FALSE,
+        round_summary JSONB,
+        dealer_selection_team INTEGER,
+        dealer_index INTEGER,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
@@ -99,6 +102,18 @@ export async function initDatabase() {
 
     await client.query(`
       ALTER TABLE game_states ADD COLUMN IF NOT EXISTS ask_above_8 BOOLEAN NOT NULL DEFAULT FALSE;
+    `);
+
+    await client.query(`
+      ALTER TABLE game_states ADD COLUMN IF NOT EXISTS round_summary JSONB;
+    `);
+
+    await client.query(`
+      ALTER TABLE game_states ADD COLUMN IF NOT EXISTS dealer_selection_team INTEGER;
+    `);
+
+    await client.query(`
+      ALTER TABLE game_states ADD COLUMN IF NOT EXISTS dealer_index INTEGER;
     `);
 
     await client.query(`

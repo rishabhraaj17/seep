@@ -31,8 +31,8 @@ export default function BiddingPhase({ socket, userId, lobbyCode, hand, floorCar
   useEffect(() => {
     socket.on('bid-placed', ({ bid, playerId }: { bid: number; playerId: string }) => {
       setWaitMsg(playerId === userId
-        ? `You bid ${rankLabel[bid]}. Starting game...`
-        : `A bid of ${rankLabel[bid]} was placed. Get ready!`
+        ? `You called ${rankLabel[bid]}. Starting game...`
+        : `A call of ${rankLabel[bid]} was announced. Get ready!`
       );
       setTimeout(() => onBidComplete(), 1400);
     });
@@ -75,11 +75,11 @@ export default function BiddingPhase({ socket, userId, lobbyCode, hand, floorCar
             <div className="text-center mb-6">
               <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full mb-3"
                 style={{ background: 'rgba(212,175,55,0.1)', border: '1px solid rgba(212,175,55,0.3)' }}>
-                <span className="text-xs font-display tracking-[0.25em] uppercase text-gold-gradient font-bold">Bidding Phase</span>
+                <span className="text-xs font-display tracking-[0.25em] uppercase text-gold-gradient font-bold">Calling Phase</span>
               </div>
-              <h1 className="font-display text-2xl sm:text-3xl font-bold text-gold-gradient">Place Your Bid</h1>
+              <h1 className="font-display text-2xl sm:text-3xl font-bold text-gold-gradient">Call First Card</h1>
               <p className="text-sm mt-2" style={{ color: 'rgba(245,240,232,0.4)' }}>
-                Select a card from your hand (9–K) to declare your bid value
+                Select a value to call. You must hold a matching card (9–K) in your hand to call it.
               </p>
             </div>
 
@@ -101,7 +101,7 @@ export default function BiddingPhase({ socket, userId, lobbyCode, hand, floorCar
               <div className="flex items-center gap-3 mb-3">
                 <div className="divider-gold flex-1" />
                 <span className="text-xs font-display tracking-[0.2em] uppercase" style={{ color: 'rgba(212,175,55,0.6)' }}>
-                  Floor Cards
+                  Floor Cards (Face Down for others)
                 </span>
                 <div className="divider-gold flex-1" />
               </div>
@@ -130,19 +130,13 @@ export default function BiddingPhase({ socket, userId, lobbyCode, hand, floorCar
               </div>
               <div className="flex justify-center gap-2 sm:gap-3 flex-wrap min-h-[100px] items-center">
                 {hand.length > 0 ? hand.map(card => {
-                  const value = rankToValue[card.rank];
-                  const canBid = [9, 10, 11, 12, 13].includes(value);
                   const isChosen = selectedCard?.id === card.id;
                   return (
-                    <motion.div key={card.id}
-                      whileHover={canBid ? { y: -8, scale: 1.05 } : {}}
-                      className={canBid ? 'cursor-pointer' : 'opacity-50'}
-                      style={{ transition: 'none' }}>
+                    <motion.div key={card.id} style={{ transition: 'none' }}>
                       <PlayingCard
                         card={card}
                         size="md"
                         isSelected={isChosen}
-                        onClick={canBid ? () => { setSelectedCard(card); setSelectedBid(value); } : undefined}
                       />
                     </motion.div>
                   );
@@ -154,17 +148,17 @@ export default function BiddingPhase({ socket, userId, lobbyCode, hand, floorCar
               </div>
               {hand.length > 0 && availableBids.length === 0 && (
                 <p className="text-center text-xs mt-2" style={{ color: '#f1948a' }}>
-                  ⚠️ You have no cards with values 9–K
+                  ⚠️ You have no cards with values 9–K to call
                 </p>
               )}
             </div>
 
-            {/* Bid value picker */}
+            {/* Call value picker */}
             <div className="mb-6">
               <div className="flex items-center gap-3 mb-3">
                 <div className="divider-gold flex-1" />
                 <span className="text-xs font-display tracking-[0.2em] uppercase" style={{ color: 'rgba(212,175,55,0.6)' }}>
-                  Bid Value
+                  Choose Call Value
                 </span>
                 <div className="divider-gold flex-1" />
               </div>
@@ -201,15 +195,15 @@ export default function BiddingPhase({ socket, userId, lobbyCode, hand, floorCar
               className="btn-gold w-full py-4 rounded-xl font-display text-sm tracking-widest uppercase"
             >
               {submitted
-                ? '✓ Bid Placed'
+                ? '✓ Call Placed'
                 : selectedBid
-                ? `✦ Place Bid — ${rankLabel[selectedBid]}`
-                : '✦ Select a Card to Bid'
+                ? `✦ Declare Call — ${rankLabel[selectedBid]}`
+                : '✦ Choose a Call Value Above'
               }
             </motion.button>
 
             <p className="text-center text-xs mt-3" style={{ color: 'rgba(245,240,232,0.25)' }}>
-              Tip: Cards are highlighted when they can be bid. Click a card or bid value to select.
+              Tip: Call buttons are enabled if you hold a card of that value. Declare a call to start the playing rounds.
             </p>
           </div>
         </div>

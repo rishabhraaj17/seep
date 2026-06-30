@@ -187,5 +187,8 @@ export function createInitialGameState(lobbyCode: string): GameState {
     seepCount: { team1: 0, team2: 0 },
     gamePhase: 'bidding',
     firstTurnCompleted: [],
+    handSizes: {},
+    players: [],
+    deck: [],
   };
 }

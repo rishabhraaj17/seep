@@ -27,6 +27,56 @@ function getCardValue(card: Card): number {
   return parseInt(card.rank, 10);
 }
 
+function groupHouseCards(cards: Card[], targetValue: number): Card[][] {
+  const result: Card[][] = [];
+  const remaining = [...cards];
+
+  const findAndRemoveSubset = (): boolean => {
+    let foundPath: Card[] | null = null;
+    const search = (startIndex: number, currentSum: number, path: Card[]): boolean => {
+      if (currentSum === targetValue) {
+        foundPath = [...path];
+        return true;
+      }
+      if (currentSum > targetValue) {
+        return false;
+      }
+      for (let i = startIndex; i < remaining.length; i++) {
+        const card = remaining[i];
+        const val = getCardValue(card);
+        path.push(card);
+        if (search(i + 1, currentSum + val, path)) {
+          return true;
+        }
+        path.pop();
+      }
+      return false;
+    };
+
+    if (search(0, 0, [])) {
+      if (foundPath) {
+        (foundPath as Card[]).forEach(c => {
+          const idx = remaining.findIndex(rc => rc.id === c.id);
+          if (idx !== -1) remaining.splice(idx, 1);
+        });
+        result.push(foundPath);
+        return true;
+      }
+    }
+    return false;
+  };
+
+  while (remaining.length > 0) {
+    const found = findAndRemoveSubset();
+    if (!found) {
+      remaining.forEach(c => result.push([c]));
+      break;
+    }
+  }
+
+  return result;
+}
+
 function findCapturableCards(card: Card, floor: Card[]): Card[] {
   const val = getCardValue(card);
   const direct = floor.filter(f => getCardValue(f) === val);
@@ -69,6 +119,7 @@ export default function GameScreen({
   const notifId = useRef(0);
   const [showProfile, setShowProfile] = useState(false);
   const [showGuide, setShowGuide] = useState(false); // Rules hidden by default
+  const [lastMoveVisual, setLastMoveVisual] = useState<any | null>(null);
 
   const playersRef = useRef(gameState?.players);
   useEffect(() => {
@@ -159,6 +210,18 @@ export default function GameScreen({
       }
       
       addNotification(msg, 'move', 3500, card);
+      if (action === 'BUILD_HOUSE' || action === 'CAPTURE') {
+        setLastMoveVisual({
+          playedCard: card,
+          targetCards: targets || [],
+          action,
+          value: hVal,
+          player: displayName,
+        });
+        setTimeout(() => {
+          setLastMoveVisual(null);
+        }, 2200);
+      }
     });
 
     socket.on('error-message', (data: { message: string }) => {
@@ -585,17 +648,79 @@ export default function GameScreen({
 
         {/* CENTER — Table Floor (Loose Cards & Houses) */}
         <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 flex flex-col gap-5 sm:gap-6 items-center justify-center z-10 w-full max-w-2xl px-4">
-          {/* Loose Floor Cards */}
-          <div className="flex flex-col items-center">
-            <span className="text-[9px] sm:text-[10px] uppercase tracking-widest text-emerald-300/30 mb-1">Loose Cards</span>
-            <FloorCards
-              cards={gameState?.floor || []}
-              highlightedIds={capturedCards.map(c => c.id)}
-              onCardClick={handleCardClick}
-              onDropOnCard={handleDropOnCard}
-              hideEmptyMessage={!!(gameState?.houses && gameState.houses.length > 0)}
-            />
-          </div>
+          {/* Last Move Visual Animation Overlay */}
+          <AnimatePresence>
+            {lastMoveVisual && (
+              <motion.div
+                initial={{ opacity: 0, scale: 0.9 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.95 }}
+                className="absolute inset-0 bg-emerald-950/95 border border-gold/30 rounded-2xl flex flex-col items-center justify-center shadow-2xl z-30 p-4"
+                style={{ backdropFilter: 'blur(8px)' }}
+              >
+                <span className="text-[10px] uppercase tracking-widest text-gold-gradient font-bold mb-3">
+                  ⚡ {lastMoveVisual.player}'s Move
+                </span>
+                
+                <div className="flex items-center gap-4 sm:gap-6">
+                  {/* Target Cards */}
+                  {lastMoveVisual.targetCards.length > 0 ? (
+                    <div className="flex -space-x-3 bg-black/20 p-2 rounded-xl border border-emerald-800/20">
+                      {lastMoveVisual.targetCards.map((c: Card) => (
+                        <div key={c.id}>
+                          <PlayingCard card={c} size="md" />
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="text-xs text-gray-500 italic bg-black/20 p-4 rounded-xl border border-emerald-800/10">Empty Table</div>
+                  )}
+
+                  {/* Action Arrow */}
+                  <div className="flex flex-col items-center gap-1">
+                    <span className="text-gold-gradient font-bold text-xl leading-none">➔</span>
+                    <span className="text-[8px] font-bold tracking-widest uppercase text-emerald-400 bg-emerald-900/30 px-1.5 py-0.5 rounded-full border border-emerald-800/30">
+                      {lastMoveVisual.action === 'BUILD_HOUSE' ? 'BUILD' : 'CAPTURE'}
+                    </span>
+                  </div>
+
+                  {/* Played Card Overlay */}
+                  <div className="relative">
+                    <PlayingCard card={lastMoveVisual.playedCard} size="md" className="border-2 border-gold shadow-lg" />
+                    {lastMoveVisual.value !== undefined && (
+                      <div className="absolute -top-2.5 -right-2.5 bg-gold text-emerald-950 text-[10px] font-bold rounded-full w-6 h-6 flex items-center justify-center border border-emerald-900 shadow font-display">
+                        {lastMoveVisual.value}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <p className="text-xs text-gray-300 mt-4 text-center font-display max-w-xs">
+                  {lastMoveVisual.action === 'BUILD_HOUSE'
+                    ? `Played [${lastMoveVisual.playedCard.rank}${suitSymbol(lastMoveVisual.playedCard.suit)}] to build House of ${lastMoveVisual.value}`
+                    : `Played [${lastMoveVisual.playedCard.rank}${suitSymbol(lastMoveVisual.playedCard.suit)}] to capture floor cards`
+                  }
+                </p>
+              </motion.div>
+            )}
+          </AnimatePresence>
+          {/* Loose Floor Cards — only show when there are actually loose cards */}
+          {(gameState?.floor?.length ?? 0) > 0 ? (
+            <div className="flex flex-col items-center">
+              <span className="text-[9px] sm:text-[10px] uppercase tracking-widest text-emerald-300/30 mb-1">Loose Cards</span>
+              <FloorCards
+                cards={gameState?.floor || []}
+                highlightedIds={capturedCards.map(c => c.id)}
+                onCardClick={handleCardClick}
+                onDropOnCard={handleDropOnCard}
+                hideEmptyMessage={true}
+              />
+            </div>
+          ) : (gameState?.houses?.length ?? 0) === 0 ? (
+            <div className="flex flex-col items-center">
+              <p className="text-sm font-display" style={{ color: 'rgba(245,240,232,0.3)' }}>Table is empty</p>
+            </div>
+          ) : null}
 
           {/* Active Houses */}
           {gameState?.houses && gameState.houses.length > 0 && (
@@ -604,6 +729,7 @@ export default function GameScreen({
               <div className="flex flex-wrap gap-4 sm:gap-6 justify-center items-center">
                 {gameState.houses.map(house => {
                   const isSelected = capturedCards.some(cc => house.cards.some(hc => hc.id === cc.id));
+                  const groups = groupHouseCards(house.cards, house.value);
                   return (
                     <motion.div
                       key={house.id}
@@ -623,18 +749,22 @@ export default function GameScreen({
                         {house.isPukta ? '🏆' : '🏠'} House {house.value}
                       </div>
 
-                      {/* Stack of Cards */}
-                      <div className="flex items-center justify-center mt-2.5 min-h-[84px] relative px-3">
-                        {house.cards.map((c, idx) => (
-                          <div
-                            key={c.id}
-                            style={{
-                              marginLeft: idx > 0 ? '-26px' : '0px',
-                              zIndex: idx,
-                              transform: `rotate(${(idx - (house.cards.length - 1) / 2) * 2}deg)`,
-                            }}
-                          >
-                            <PlayingCard card={c} size="sm" />
+                      {/* Stack of Cards grouped together */}
+                      <div className="flex gap-2 items-start justify-center mt-2.5 min-h-[96px] px-2">
+                        {groups.map((group, gIdx) => (
+                          <div key={gIdx} className="flex flex-col items-center">
+                            {group.map((c, cIdx) => (
+                              <div
+                                key={c.id}
+                                style={{
+                                  marginTop: cIdx > 0 ? '-28px' : '0px',
+                                  zIndex: cIdx,
+                                  position: 'relative',
+                                }}
+                              >
+                                <PlayingCard card={c} size="sm" />
+                              </div>
+                            ))}
                           </div>
                         ))}
                       </div>
@@ -760,6 +890,147 @@ export default function GameScreen({
           </AnimatePresence>
         </div>
       </div>
+
+      {/* ─── ROUND END OVERLAY ─── */}
+      <AnimatePresence>
+        {gameState?.gamePhase === 'roundEnd' && gameState.roundSummary && (
+          <motion.div
+            key="round-end"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="absolute inset-0 z-50 flex items-center justify-center"
+            style={{ background: 'rgba(5,12,7,0.88)', backdropFilter: 'blur(6px)' }}
+          >
+            <motion.div
+              initial={{ scale: 0.88, y: 30 }}
+              animate={{ scale: 1, y: 0 }}
+              className="rounded-2xl p-8 w-full max-w-md shadow-2xl text-center"
+              style={{ background: 'rgba(9,22,12,0.98)', border: '1px solid rgba(212,175,55,0.35)' }}
+            >
+              <p className="text-[10px] uppercase tracking-[0.3em] font-display mb-1" style={{ color: 'rgba(212,175,55,0.5)' }}>
+                Round {gameState.roundNumber - 1} Complete
+              </p>
+              <h2 className="text-2xl font-display font-bold text-gold-gradient mb-6">
+                {gameState.roundSummary.winningTeam === 1
+                  ? `${teamNames.team1} wins this round!`
+                  : gameState.roundSummary.winningTeam === 2
+                    ? `${teamNames.team2} wins this round!`
+                    : "Round Draw!"}
+              </h2>
+
+              {/* Score table */}
+              <div className="grid grid-cols-3 gap-2 text-xs mb-6">
+                <div />
+                <div className="font-bold font-display text-gold-gradient text-center">{teamNames.team1}</div>
+                <div className="font-bold font-display text-gold-gradient text-center">{teamNames.team2}</div>
+
+                <div className="text-left" style={{ color: 'rgba(245,240,232,0.5)' }}>Card pts</div>
+                <div className="text-center font-mono">{gameState.roundSummary.team1CardPoints}</div>
+                <div className="text-center font-mono">{gameState.roundSummary.team2CardPoints}</div>
+
+                <div className="text-left" style={{ color: 'rgba(245,240,232,0.5)' }}>Net seeps</div>
+                <div className="text-center font-mono">{gameState.roundSummary.team1SeepsNet > 0 ? `+${gameState.roundSummary.team1SeepsNet} 🌊` : '—'}</div>
+                <div className="text-center font-mono">{gameState.roundSummary.team2SeepsNet > 0 ? `+${gameState.roundSummary.team2SeepsNet} 🌊` : '—'}</div>
+
+                <div className="text-left border-t border-gold/20 pt-1" style={{ color: 'rgba(245,240,232,0.5)' }}>Round Δ</div>
+                <div className={`text-center font-mono font-bold border-t border-gold/20 pt-1 ${gameState.roundSummary.team1RoundScore > 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                  {gameState.roundSummary.team1RoundScore > 0 ? `+${gameState.roundSummary.team1RoundScore}` : gameState.roundSummary.team1RoundScore}
+                </div>
+                <div className={`text-center font-mono font-bold border-t border-gold/20 pt-1 ${gameState.roundSummary.team2RoundScore > 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                  {gameState.roundSummary.team2RoundScore > 0 ? `+${gameState.roundSummary.team2RoundScore}` : gameState.roundSummary.team2RoundScore}
+                </div>
+
+                <div className="text-left border-t border-gold/20 pt-2 mt-1" style={{ color: 'rgba(245,240,232,0.5)' }}>Total</div>
+                <div className="text-center font-mono font-bold text-gold-gradient border-t border-gold/20 pt-2 mt-1 text-base">{gameState.teamScores.team1}</div>
+                <div className="text-center font-mono font-bold text-gold-gradient border-t border-gold/20 pt-2 mt-1 text-base">{gameState.teamScores.team2}</div>
+              </div>
+
+              {/* Dealer selection */}
+              {(() => {
+                const selTeam = gameState.dealerSelectionTeam;
+                const losingTeamPlayers = gameState.players.filter(p => p.team === selTeam);
+                const myTeam = gameState.players.find(p => p.id === userId)?.team;
+                const canPick = myTeam === selTeam;
+                return (
+                  <div>
+                    <div className="divider-gold opacity-20 my-4" />
+                    <p className="text-xs mb-3" style={{ color: 'rgba(245,240,232,0.5)' }}>
+                      <span className="font-bold" style={{ color: 'rgba(212,175,55,0.8)' }}>
+                        {selTeam === 1 ? teamNames.team1 : teamNames.team2}
+                      </span>{' '}lost — choose the next dealer:
+                    </p>
+                    <div className="flex gap-3 justify-center flex-wrap">
+                      {losingTeamPlayers.map(p => (
+                        <button
+                          key={p.id}
+                          disabled={!canPick}
+                          onClick={() => socket.emit('select-dealer', { lobbyCode, dealerId: p.id })}
+                          className={`px-4 py-2 rounded-xl text-xs font-bold font-display transition-all ${
+                            canPick
+                              ? 'btn-gold cursor-pointer'
+                              : 'bg-black/30 text-gray-500 border border-gray-800 cursor-not-allowed'
+                          }`}
+                        >
+                          {p.username}{canPick ? ' — Deal' : ''}
+                        </button>
+                      ))}
+                    </div>
+                    {!canPick && (
+                      <p className="text-[10px] mt-3 italic" style={{ color: 'rgba(245,240,232,0.3)' }}>
+                        Waiting for {selTeam === 1 ? teamNames.team1 : teamNames.team2} to pick a dealer…
+                      </p>
+                    )}
+                  </div>
+                );
+              })()}
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ─── GAME END OVERLAY ─── */}
+      <AnimatePresence>
+        {gameState?.gamePhase === 'gameEnd' && (
+          <motion.div
+            key="game-end"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            className="absolute inset-0 z-50 flex items-center justify-center"
+            style={{ background: 'rgba(5,12,7,0.92)', backdropFilter: 'blur(8px)' }}
+          >
+            <motion.div
+              initial={{ scale: 0.85, y: 40 }}
+              animate={{ scale: 1, y: 0 }}
+              transition={{ type: 'spring', stiffness: 180, damping: 22 }}
+              className="rounded-2xl p-10 w-full max-w-sm shadow-2xl text-center"
+              style={{ background: 'rgba(9,22,12,0.99)', border: '1px solid rgba(212,175,55,0.5)' }}
+            >
+              <div className="text-5xl mb-4">🏆</div>
+              <p className="text-[10px] uppercase tracking-[0.3em] font-display mb-1" style={{ color: 'rgba(212,175,55,0.5)' }}>Game Over</p>
+              <h2 className="text-3xl font-display font-bold text-gold-gradient mb-2">
+                {(gameState.teamScores.team1 >= 100)
+                  ? `${teamNames.team1} wins!`
+                  : `${teamNames.team2} wins!`}
+              </h2>
+              <div className="flex justify-center gap-8 mt-6 mb-8">
+                <div>
+                  <div className="text-2xl font-bold font-mono text-gold-gradient">{gameState.teamScores.team1}</div>
+                  <div className="text-xs mt-1" style={{ color: 'rgba(245,240,232,0.4)' }}>{teamNames.team1}</div>
+                </div>
+                <div className="w-px bg-gold/20" />
+                <div>
+                  <div className="text-2xl font-bold font-mono text-gold-gradient">{gameState.teamScores.team2}</div>
+                  <div className="text-xs mt-1" style={{ color: 'rgba(245,240,232,0.4)' }}>{teamNames.team2}</div>
+                </div>
+              </div>
+              <button onClick={onLeaveGame} className="btn-gold px-8 py-3 rounded-xl text-sm font-bold font-display uppercase tracking-widest">
+                Back to Lobby
+              </button>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

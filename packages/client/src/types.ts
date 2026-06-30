@@ -28,6 +28,16 @@ export interface GamePlayer {
   seat: number;
 }
 
+export interface RoundSummary {
+  team1CardPoints: number;
+  team2CardPoints: number;
+  team1SeepsNet: number;
+  team2SeepsNet: number;
+  team1RoundScore: number;
+  team2RoundScore: number;
+  winningTeam: 1 | 2 | null;
+}
+
 export interface GameState {
   lobbyCode: string;
   floor: FloorCard[];
@@ -51,4 +61,7 @@ export interface GameState {
   players: GamePlayer[];
   deck: Card[];
   askAbove8?: boolean;
+  roundSummary?: RoundSummary;
+  dealerSelectionTeam?: 1 | 2;
+  dealerIndex?: number;
 }
