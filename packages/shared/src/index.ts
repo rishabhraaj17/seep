@@ -67,6 +67,8 @@ export interface GameState {
   tossHistory?: { playerId: string; card: Card }[];
   handSizes: Record<string, number>;
   players: GamePlayer[];
+  deck: Card[];
+  askAbove8?: boolean;
 }
 
 export interface LobbyAction {

@@ -49,6 +49,8 @@ export interface GameState {
   tossHistory?: { playerId: string; card: Card }[];
   handSizes: Record<string, number>;
   players: { id: string; username: string; team: number; seat: number; }[];
+  deck: Card[];
+  askAbove8?: boolean;
 }
 
 interface LobbyState {
@@ -198,7 +200,7 @@ async function loadLobby(code: string, client?: any): Promise<LobbyState | null>
   };
 
   const gsRes = await db.query(
-    'SELECT floor, houses, hands, current_player_index, round_number, team_scores, captured_cards, team_seeps, game_phase, bid, last_capture_team, first_turn_completed, toss_winner, toss_history, hand_sizes FROM game_states WHERE lobby_code = $1',
+    'SELECT floor, houses, hands, current_player_index, round_number, team_scores, captured_cards, team_seeps, game_phase, bid, last_capture_team, first_turn_completed, toss_winner, toss_history, hand_sizes, deck, ask_above_8 FROM game_states WHERE lobby_code = $1',
     [code]
   );
 
@@ -226,6 +228,8 @@ async function loadLobby(code: string, client?: any): Promise<LobbyState | null>
         team: p.team,
         seat: p.seat,
       })),
+      deck: gsRow.deck || [],
+      askAbove8: gsRow.ask_above_8 || false,
     };
     const hands = new Map<string, Card[]>();
     if (gsRow.hands) {
@@ -268,8 +272,8 @@ async function saveLobby(lobby: LobbyState, client?: any): Promise<void> {
         `INSERT INTO game_states (
           lobby_code, floor, houses, hands, current_player_index, round_number, 
           team_scores, captured_cards, team_seeps, game_phase, bid, last_capture_team, first_turn_completed,
-          toss_winner, toss_history, hand_sizes
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+          toss_winner, toss_history, hand_sizes, deck, ask_above_8
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
          ON CONFLICT (lobby_code) DO UPDATE SET
           floor = EXCLUDED.floor,
           houses = EXCLUDED.houses,
@@ -286,6 +290,8 @@ async function saveLobby(lobby: LobbyState, client?: any): Promise<void> {
           toss_winner = EXCLUDED.toss_winner,
           toss_history = EXCLUDED.toss_history,
           hand_sizes = EXCLUDED.hand_sizes,
+          deck = EXCLUDED.deck,
+          ask_above_8 = EXCLUDED.ask_above_8,
           updated_at = CURRENT_TIMESTAMP`,
         [
           lobby.code,
@@ -304,6 +310,8 @@ async function saveLobby(lobby: LobbyState, client?: any): Promise<void> {
           lobby.gameState.tossWinner || null,
           JSON.stringify(lobby.gameState.tossHistory || []),
           JSON.stringify(handSizes),
+          JSON.stringify(lobby.gameState.deck || []),
+          lobby.gameState.askAbove8 || false,
         ]
       );
     }
@@ -387,36 +395,24 @@ async function checkRoundEnd(lobby: LobbyState) {
       lobby.gameState.roundNumber += 1;
       lobby.gameState.gamePhase = 'bidding';
 
-      let deck: Card[] = [];
-      let floorCards: Card[] = [];
-      let hands: Card[][] = [];
-      let redeal = true;
+      const deck = shuffle(createDeck());
+      const floorCards = deck.slice(0, 4);
 
-      while (redeal) {
-        deck = shuffle(createDeck());
-        let deckIndex = 0;
-        floorCards = deck.slice(deckIndex, 4);
-        deckIndex += 4;
-
-        hands = [];
-        for (let i = 0; i < 4; i++) {
-          hands.push(deck.slice(deckIndex, deckIndex + 12));
-          deckIndex += 12;
-        }
-
-        // Caller (player 0) constraint check on first 4 cards
-        const hasCardGe9 = hands[0].slice(0, 4).some(c => {
-          const val = getCardNumericValue(c);
-          return val >= 9 && val <= 13;
-        });
-        if (hasCardGe9) {
-          redeal = false;
-        }
-      }
+      const hand0 = deck.slice(4, 8);
+      const hand1 = deck.slice(8, 12);
+      const hand2 = deck.slice(12, 16);
+      const hand3 = deck.slice(16, 28);
+      const remainingDeck = deck.slice(28, 52);
 
       lobby.hands.clear();
-      lobby.players.forEach((p, i) => {
-        lobby.hands?.set(p.id, hands[i]);
+      lobby.hands.set(lobby.players[0].id, hand0);
+      lobby.hands.set(lobby.players[1].id, hand1);
+      lobby.hands.set(lobby.players[2].id, hand2);
+      lobby.hands.set(lobby.players[3].id, hand3);
+
+      const hasCardGe9 = hand0.some(c => {
+        const val = getCardNumericValue(c);
+        return val >= 9 && val <= 13;
       });
 
       lobby.gameState.floor = floorCards;
@@ -424,8 +420,11 @@ async function checkRoundEnd(lobby: LobbyState) {
       lobby.gameState.bid = undefined;
       lobby.gameState.currentPlayerIndex = 0;
       lobby.gameState.firstTurnCompleted = [];
+      lobby.gameState.deck = remainingDeck;
+      lobby.gameState.askAbove8 = !hasCardGe9;
 
       // Broadcast new deal cards privately to all
+      const hands = [hand0, hand1, hand2, hand3];
       lobby.players.forEach((p, i) => {
         const visibleHand = (i === 3) ? hands[i] : hands[i].slice(0, 4);
         io.to(p.socketId).emit('deal-cards', {
@@ -1009,37 +1008,25 @@ io.on('connection', (socket: Socket) => {
 
         lobby.status = 'bidding';
 
-        // 3. Deal cards (with guaranteed bidding card >= 9 in dealer's first 4 cards)
-        let deck: Card[] = [];
-        let floorCards: Card[] = [];
-        let hands: Card[][] = [];
-        let redeal = true;
-
-        while (redeal) {
-          deck = shuffle(createDeck());
-          let deckIndex = 0;
-          floorCards = deck.slice(deckIndex, 4);
-          deckIndex += 4;
-
-          hands = [];
-          for (let i = 0; i < 4; i++) {
-            hands.push(deck.slice(deckIndex, deckIndex + 12));
-            deckIndex += 12;
-          }
-
-          // Dealer (seat 1, index 0) constraint check on first 4 cards
-          const hasCardGe9 = hands[0].slice(0, 4).some(c => {
-            const val = getCardNumericValue(c);
-            return val >= 9 && val <= 13;
-          });
-          if (hasCardGe9) {
-            redeal = false;
-          }
-        }
+        // 3. Deal cards (initial deal: floor gets 4, players get 4, dealer gets 12)
+        const deck = shuffle(createDeck());
+        const floorCards = deck.slice(0, 4);
+        
+        const hand0 = deck.slice(4, 8);
+        const hand1 = deck.slice(8, 12);
+        const hand2 = deck.slice(12, 16);
+        const hand3 = deck.slice(16, 28);
+        const remainingDeck = deck.slice(28, 52);
 
         lobby.hands = new Map();
-        lobby.players.forEach((p, i) => {
-          lobby.hands?.set(p.id, hands[i]);
+        lobby.hands.set(lobby.players[0].id, hand0);
+        lobby.hands.set(lobby.players[1].id, hand1);
+        lobby.hands.set(lobby.players[2].id, hand2);
+        lobby.hands.set(lobby.players[3].id, hand3);
+
+        const hasCardGe9 = hand0.some(c => {
+          const val = getCardNumericValue(c);
+          return val >= 9 && val <= 13;
         });
 
         lobby.gameState = {
@@ -1064,6 +1051,8 @@ io.on('connection', (socket: Socket) => {
             team: p.team,
             seat: p.seat || 1,
           })),
+          deck: remainingDeck,
+          askAbove8: !hasCardGe9,
         };
 
         await saveLobby(lobby, client);
@@ -1131,7 +1120,24 @@ io.on('connection', (socket: Socket) => {
       lobby.gameState.bid = { playerId, value: bid, fulfilled: false };
       lobby.gameState.gamePhase = 'playing';
 
-      const bidCard = hand.find(c => c.id === cardId)!;
+      const remaining = lobby.gameState.deck || [];
+      if (remaining.length >= 24) {
+        const hand0 = lobby.hands.get(lobby.players[0].id) || [];
+        const hand1 = lobby.hands.get(lobby.players[1].id) || [];
+        const hand2 = lobby.hands.get(lobby.players[2].id) || [];
+
+        const drawn0 = remaining.slice(0, 8);
+        const drawn1 = remaining.slice(8, 16);
+        const drawn2 = remaining.slice(16, 24);
+
+        lobby.hands.set(lobby.players[0].id, [...hand0, ...drawn0]);
+        lobby.hands.set(lobby.players[1].id, [...hand1, ...drawn1]);
+        lobby.hands.set(lobby.players[2].id, [...hand2, ...drawn2]);
+        
+        lobby.gameState.deck = []; // cleared
+      }
+
+      const bidCard = lobby.hands.get(playerId)!.find(c => c.id === cardId)!;
       await logMove(client, lobbyCode, playerId, 'BID', bidCard, [], bid);
 
       await saveLobby(lobby, client);
@@ -1160,7 +1166,7 @@ io.on('connection', (socket: Socket) => {
         io.to(socket.id).emit('deal-cards', {
           lobbyCode,
           floor: lobby.gameState.floor,
-          hand: hand, // full 12 cards
+          hand: lobby.hands.get(playerId) || [],
           playerIndex: 0,
           biddingPlayerIndex: 0,
         });
@@ -1170,6 +1176,128 @@ io.on('connection', (socket: Socket) => {
     } catch (err) {
       await client.query('ROLLBACK');
       console.error('Error placing bid:', err);
+    } finally {
+      client.release();
+    }
+  });
+
+  // Respond to dealer query about above 8 cards
+  socket.on('respond-above-8', async ({ lobbyCode, answer }: { lobbyCode: string; answer: boolean }) => {
+    const playerId = socket.data.userId as string;
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const lockRes = await client.query('SELECT 1 FROM lobbies WHERE code = $1 FOR UPDATE', [lobbyCode]);
+      if (lockRes.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return;
+      }
+
+      const lobby = await loadLobby(lobbyCode, client);
+      if (!lobby?.gameState || !lobby.hands) {
+        await client.query('ROLLBACK');
+        return;
+      }
+
+      const callerPlayer = lobby.players[0];
+      if (callerPlayer?.id !== playerId) {
+        socket.emit('error-message', { message: 'Only the caller can answer this' });
+        await client.query('ROLLBACK');
+        return;
+      }
+
+      const hand = lobby.hands.get(playerId) || [];
+      const hasAbove8 = hand.slice(0, 4).some(c => getCardNumericValue(c) > 8);
+
+      if (answer === false) {
+        if (hasAbove8) {
+          socket.emit('error-message', { message: 'Verification failed: You do have a card above 8 in your hand!' });
+          await client.query('ROLLBACK');
+          return;
+        } else {
+          let currentDeck = lobby.gameState.deck || [];
+          if (currentDeck.length < 4) {
+            currentDeck = shuffle(createDeck());
+          }
+
+          const old4 = hand.slice(0, 4);
+          const new4 = currentDeck.slice(0, 4);
+          const remainingDeck = shuffle([...currentDeck.slice(4), ...old4]);
+          const updatedHand = [...new4, ...hand.slice(4)];
+          
+          lobby.hands.set(playerId, updatedHand);
+          lobby.gameState.deck = remainingDeck;
+
+          const newHasAbove8 = new4.some(c => getCardNumericValue(c) > 8);
+          if (!newHasAbove8) {
+            lobby.gameState.askAbove8 = true;
+            io.to(lobbyCode).emit('toast-message', { message: 'Caller had no cards above 8. Dealer dealt 4 new cards.' });
+          } else {
+            lobby.gameState.askAbove8 = false;
+            io.to(lobbyCode).emit('toast-message', { message: 'Dealer verified caller now has a card above 8. Proceeding to bid!' });
+          }
+
+          await saveLobby(lobby, client);
+          await client.query('COMMIT');
+
+          io.to(callerPlayer.socketId).emit('deal-cards', {
+            lobbyCode,
+            floor: lobby.gameState.floor,
+            hand: updatedHand.slice(0, 4),
+            playerIndex: 0,
+            biddingPlayerIndex: 0,
+          });
+
+          io.to(lobbyCode).emit('game-state', lobby.gameState);
+        }
+      } else {
+        if (hasAbove8) {
+          lobby.gameState.askAbove8 = false;
+          await saveLobby(lobby, client);
+          await client.query('COMMIT');
+          io.to(lobbyCode).emit('game-state', lobby.gameState);
+        } else {
+          let currentDeck = lobby.gameState.deck || [];
+          if (currentDeck.length < 4) {
+            currentDeck = shuffle(createDeck());
+          }
+
+          const old4 = hand.slice(0, 4);
+          const new4 = currentDeck.slice(0, 4);
+          const remainingDeck = shuffle([...currentDeck.slice(4), ...old4]);
+          const updatedHand = [...new4, ...hand.slice(4)];
+          
+          lobby.hands.set(playerId, updatedHand);
+          lobby.gameState.deck = remainingDeck;
+
+          const newHasAbove8 = new4.some(c => getCardNumericValue(c) > 8);
+          if (!newHasAbove8) {
+            lobby.gameState.askAbove8 = true;
+          } else {
+            lobby.gameState.askAbove8 = false;
+          }
+
+          await saveLobby(lobby, client);
+          await client.query('COMMIT');
+
+          io.to(lobbyCode).emit('toast-message', { 
+            message: 'Verification Alert: Caller lied! They had no cards above 8. Dealer dealt 4 new cards.' 
+          });
+
+          io.to(callerPlayer.socketId).emit('deal-cards', {
+            lobbyCode,
+            floor: lobby.gameState.floor,
+            hand: updatedHand.slice(0, 4),
+            playerIndex: 0,
+            biddingPlayerIndex: 0,
+          });
+
+          io.to(lobbyCode).emit('game-state', lobby.gameState);
+        }
+      }
+    } catch (err) {
+      await client.query('ROLLBACK');
+      console.error('Error in respond-above-8:', err);
     } finally {
       client.release();
     }

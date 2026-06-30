@@ -70,6 +70,8 @@ export async function initDatabase() {
         toss_winner VARCHAR(50),
         toss_history JSONB NOT NULL DEFAULT '[]'::jsonb,
         hand_sizes JSONB NOT NULL DEFAULT '{}'::jsonb,
+        deck JSONB NOT NULL DEFAULT '[]'::jsonb,
+        ask_above_8 BOOLEAN NOT NULL DEFAULT FALSE,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
@@ -88,6 +90,14 @@ export async function initDatabase() {
 
     await client.query(`
       ALTER TABLE game_states ADD COLUMN IF NOT EXISTS hand_sizes JSONB NOT NULL DEFAULT '{}'::jsonb;
+    `);
+
+    await client.query(`
+      ALTER TABLE game_states ADD COLUMN IF NOT EXISTS deck JSONB NOT NULL DEFAULT '[]'::jsonb;
+    `);
+
+    await client.query(`
+      ALTER TABLE game_states ADD COLUMN IF NOT EXISTS ask_above_8 BOOLEAN NOT NULL DEFAULT FALSE;
     `);
 
     // Drop old check constraint and recreate to allow 'toss' phase

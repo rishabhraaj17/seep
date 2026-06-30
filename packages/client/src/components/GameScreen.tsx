@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Socket } from 'socket.io-client';
 import { motion, AnimatePresence } from 'motion/react';
 import type { Card, GameState, House } from '../types';
@@ -69,6 +69,11 @@ export default function GameScreen({
   const [showGuide, setShowGuide] = useState(false); // Rules hidden by default
   const [moveBanner, setMoveBanner] = useState<{ msg: string; card?: Card } | null>(null);
 
+  const playersRef = useRef(gameState?.players);
+  useEffect(() => {
+    playersRef.current = gameState?.players;
+  }, [gameState?.players]);
+
   const showToast = (msg: string, type: 'success' | 'error' | 'info' = 'info', duration = 3000) => {
     setToast({ msg, type });
     setTimeout(() => setToast(null), duration);
@@ -90,14 +95,18 @@ export default function GameScreen({
     }) => {
       setLobbyCode(code);
       setHand(myHand);
-      setGameState({
-        lobbyCode: code, floor, houses: [],
-        currentPlayerIndex: biddingPlayerIndex, roundNumber: 1,
-        teamScores: { team1: 0, team2: 0 }, capturedCards: { team1: [], team2: [] },
-        seepCount: { team1: 0, team2: 0 }, gamePhase: 'bidding',
-        firstTurnCompleted: [],
-        handSizes: {},
-        players: [],
+      setGameState(prev => {
+        if (prev && prev.lobbyCode === code) return prev;
+        return {
+          lobbyCode: code, floor, houses: [],
+          currentPlayerIndex: biddingPlayerIndex, roundNumber: 1,
+          teamScores: { team1: 0, team2: 0 }, capturedCards: { team1: [], team2: [] },
+          seepCount: { team1: 0, team2: 0 }, gamePhase: 'bidding',
+          firstTurnCompleted: [],
+          handSizes: {},
+          players: [],
+          deck: [],
+        };
       });
       setIsBidding(true);
     });
@@ -108,14 +117,18 @@ export default function GameScreen({
     });
 
     socket.on('bid-placed', ({ bid, playerId }: { bid: number; playerId: string }) => {
-      const bidderName = playerId === userId ? 'You' : (gameState?.players.find(p => p.id === playerId)?.username || playerId);
+      const bidderName = playerId === userId ? 'You' : (playersRef.current?.find(p => p.id === playerId)?.username || playerId);
       showToast(`📢 ${bidderName} placed a bid of ${bid}!`, 'success');
       setIsBidding(false);
     });
 
     socket.on('seep-executed', ({ playerId }: { playerId: string }) => {
-      const seepName = playerId === userId ? 'You' : (gameState?.players.find(p => p.id === playerId)?.username || playerId);
+      const seepName = playerId === userId ? 'You' : (playersRef.current?.find(p => p.id === playerId)?.username || playerId);
       showToast(`🌊 SEEP executed by ${seepName}! +50 points!`, 'success', 4000);
+    });
+
+    socket.on('toast-message', ({ message }: { message: string }) => {
+      showToast(message, 'info', 4000);
     });
 
     socket.on('move-executed', ({ playerId: pid, username: name, action, card, targetCards: targets, houseValue: hVal }) => {
@@ -144,9 +157,9 @@ export default function GameScreen({
     });
 
     return () => {
-      ['game-started', 'deal-cards', 'game-state', 'bid-placed', 'seep-executed', 'move-executed', 'error-message'].forEach(e => socket.off(e));
+      ['game-started', 'deal-cards', 'game-state', 'bid-placed', 'seep-executed', 'toast-message', 'move-executed', 'error-message'].forEach(e => socket.off(e));
     };
-  }, [socket, userId, gameState]);
+  }, [socket, userId]); // gameState removed to prevent infinite listener re-binding / flickering!
 
   // Drag and Drop handlers
   const handleDragStart = (e: React.DragEvent, card: Card) => {
@@ -287,8 +300,66 @@ export default function GameScreen({
     setSelectedCard(null); setHouseValue(null); setCapturedCards([]);
   };
 
+  const handleRespondAbove8 = (answer: boolean) => {
+    socket.emit('respond-above-8', { lobbyCode, answer });
+  };
+
   if (gameState?.gamePhase === 'toss') {
     return <TossPhase gameState={gameState} userId={userId} />;
+  }
+
+  // Verification Dialog for "Ask Caller if has card above 8"
+  const isCaller = gameState?.players[0]?.id === userId;
+  if (gameState?.askAbove8) {
+    return (
+      <div className="w-full h-screen overflow-hidden felt-bg flex flex-col items-center justify-center p-4">
+        <motion.div
+          initial={{ opacity: 0, scale: 0.95 }}
+          animate={{ opacity: 1, scale: 1 }}
+          className="p-6 rounded-2xl border text-center shadow-2xl max-w-md w-full"
+          style={{ background: 'rgba(9, 18, 11, 0.96)', borderColor: 'rgba(212,175,55,0.35)' }}
+        >
+          <div className="text-4xl mb-3">🃏</div>
+          <h2 className="font-display text-lg font-bold text-gold-gradient mb-2">Dealer Verification</h2>
+          <p className="text-xs mb-6 leading-relaxed" style={{ color: 'rgba(245,240,232,0.7)' }}>
+            The dealer asks: Do you have at least one card above 8 (9, 10, J, Q, K) in your initial 4 cards?
+          </p>
+
+          {isCaller ? (
+            <div className="flex flex-col gap-4">
+              {/* Show caller their first 4 cards for their context */}
+              <div className="flex gap-2 justify-center mb-2">
+                {hand.slice(0, 4).map(c => (
+                  <PlayingCard key={c.id} card={c} size="sm" />
+                ))}
+              </div>
+
+              <div className="flex gap-4">
+                <button
+                  onClick={() => handleRespondAbove8(true)}
+                  className="flex-1 btn-gold py-3 rounded-xl text-xs font-bold font-display uppercase tracking-widest"
+                >
+                  Yes (I have one)
+                </button>
+                <button
+                  onClick={() => handleRespondAbove8(false)}
+                  className="flex-1 py-3 rounded-xl text-xs font-bold font-display uppercase tracking-widest text-emerald-100 bg-emerald-950/40 border border-emerald-800/40 hover:border-emerald-600"
+                >
+                  No (Redeal)
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="flex flex-col items-center py-4">
+              <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-gold mb-3" />
+              <p className="text-xs" style={{ color: 'rgba(245,240,232,0.5)' }}>
+                Waiting for the caller ({gameState.players[0]?.username}) to reply to the dealer...
+              </p>
+            </div>
+          )}
+        </motion.div>
+      </div>
+    );
   }
 
   if (isBidding || gameState?.gamePhase === 'bidding') {
@@ -301,10 +372,17 @@ export default function GameScreen({
     );
   }
 
-  // Seating Mapping
-  const leftPlayer = gameState?.players.find(p => p.seat === 2);
-  const partnerPlayer = gameState?.players.find(p => p.seat === 3);
-  const rightPlayer = gameState?.players.find(p => p.seat === 4);
+  // Rotated Seat calculations (fixes duplicate player / RR name bug)
+  const myPlayer = gameState?.players.find(p => p.id === userId);
+  const mySeat = myPlayer?.seat || 1;
+
+  const leftSeat = (mySeat % 4) + 1;
+  const partnerSeat = ((mySeat + 1) % 4) + 1;
+  const rightSeat = ((mySeat + 2) % 4) + 1;
+
+  const leftPlayer = gameState?.players.find(p => p.seat === leftSeat);
+  const partnerPlayer = gameState?.players.find(p => p.seat === partnerSeat);
+  const rightPlayer = gameState?.players.find(p => p.seat === rightSeat);
 
   const leftHandSize = gameState?.handSizes[leftPlayer?.id || ''] || 4;
   const partnerHandSize = gameState?.handSizes[partnerPlayer?.id || ''] || 4;
@@ -314,7 +392,6 @@ export default function GameScreen({
   const partnerUsername = partnerPlayer?.username || 'Partner';
   const rightUsername = rightPlayer?.username || 'Opponent (R)';
 
-  // Build card arrays representing opponent card backs
   const leftHandCards = Array(leftHandSize).fill(null).map((_, i) => ({
     id: `opp-l-${i}`, suit: 'spades' as const, rank: '2' as const, pointValue: 0, faceDown: true
   }));
