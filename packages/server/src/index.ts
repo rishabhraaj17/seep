@@ -60,6 +60,7 @@ interface LobbyState {
   status: 'waiting' | 'bidding' | 'playing' | 'ended';
   gameState?: GameState;
   hands?: Map<string, Card[]>;
+  teamNames?: { team1: string; team2: string };
 }
 
 // Helper functions
@@ -168,7 +169,7 @@ function findCapturableCardsForBot(card: Card, floor: Card[]): Card[] {
 async function loadLobby(code: string, client?: any): Promise<LobbyState | null> {
   const db = client || pool;
   const lobbyRes = await db.query(
-    'SELECT code, is_private, status FROM lobbies WHERE code = $1',
+    'SELECT code, is_private, status, team_names FROM lobbies WHERE code = $1',
     [code]
   );
   if (lobbyRes.rows.length === 0) {
@@ -197,6 +198,7 @@ async function loadLobby(code: string, client?: any): Promise<LobbyState | null>
     isPrivate: lobbyRow.is_private,
     status: lobbyRow.status,
     players,
+    teamNames: lobbyRow.team_names || { team1: 'Team 1', team2: 'Team 2' },
   };
 
   const gsRes = await db.query(
@@ -660,11 +662,23 @@ async function checkAndTriggerBotTurn(lobbyCode: string) {
             io.to(currentLobby.code).emit('seep-executed', { playerId: currentPlayer.id });
           }
         } else if (playAction === 'BUILD_HOUSE') {
+          if (!houseValue || houseValue < 9 || houseValue > 13) {
+            // Invalid house value, fall back to throw
+            currentLobby.gameState!.floor.push(selectedCard);
+            currentLobby.hands?.set(currentPlayer.id, hand.filter(c => c.id !== selectedCard.id));
+            currentLobby.gameState.currentPlayerIndex = (currentLobby.gameState.currentPlayerIndex + 1) % 4;
+            await logMove(pool, lobbyCode, currentPlayer.id, 'THROW', selectedCard, [], undefined);
+            await saveLobby(currentLobby);
+            io.to(currentLobby.code).emit('game-state', currentLobby.gameState);
+            await checkRoundEnd(currentLobby);
+            await checkAndTriggerBotTurn(currentLobby.code);
+            return;
+          }
           const newHouse = {
             id: `house-${Date.now()}`,
             cards: [selectedCard, ...targetCards],
-            value: houseValue! as 9 | 10 | 11 | 12 | 13 | 14,
-            isPukta: houseValue! >= 13,
+            value: houseValue as 9 | 10 | 11 | 12 | 13,
+            isPukta: houseValue >= 13,
             createdBy: currentPlayer.id,
           };
           targetCards.forEach(c => {
@@ -925,7 +939,9 @@ io.on('connection', (socket: Socket) => {
       if (updatedLobby) {
         io.to(lobbyCode).emit('player-joined', { userId });
         io.to(lobbyCode).emit('lobby-state', {
-          players: updatedLobby.players.map(p => p.id)
+          players: updatedLobby.players.map(p => p.id),
+          playerDetails: updatedLobby.players.map(p => ({ id: p.id, team: p.team, seat: p.seat })),
+          teamNames: updatedLobby.teamNames,
         });
       }
     } catch (err) {
@@ -998,13 +1014,78 @@ io.on('connection', (socket: Socket) => {
       if (updatedLobby) {
         io.to(lobbyCode).emit('player-joined', { userId: botId });
         io.to(lobbyCode).emit('lobby-state', {
-          players: updatedLobby.players.map(p => p.id)
+          players: updatedLobby.players.map(p => p.id),
+          playerDetails: updatedLobby.players.map(p => ({ id: p.id, team: p.team, seat: p.seat })),
+          teamNames: updatedLobby.teamNames,
         });
       }
     } catch (err) {
       await client.query('ROLLBACK');
       console.error('Error adding bot:', err);
       socket.emit('error-message', { message: 'Failed to add bot' });
+    } finally {
+      client.release();
+    }
+  });
+
+  // Host can reassign players to teams and rename teams
+  socket.on('set-teams', async ({ lobbyCode, assignments, teamNames }: {
+    lobbyCode: string;
+    assignments: { userId: string; team: 1 | 2 }[];
+    teamNames: { team1: string; team2: string };
+  }) => {
+    const userId = socket.data.userId as string;
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      // Verify caller is host (first player in lobby)
+      const hostRes = await client.query(
+        'SELECT user_id FROM lobby_players WHERE lobby_code = $1 ORDER BY joined_at ASC LIMIT 1',
+        [lobbyCode]
+      );
+      if (!hostRes.rows.length || hostRes.rows[0].user_id !== userId) {
+        socket.emit('error-message', { message: 'Only the host can assign teams' });
+        await client.query('ROLLBACK');
+        return;
+      }
+
+      // Validate: exactly 2 players per team
+      const t1 = assignments.filter(a => a.team === 1);
+      const t2 = assignments.filter(a => a.team === 2);
+      if (t1.length !== 2 || t2.length !== 2) {
+        socket.emit('error-message', { message: 'Each team must have exactly 2 players' });
+        await client.query('ROLLBACK');
+        return;
+      }
+
+      // Update each player's team
+      for (const { userId: pid, team } of assignments) {
+        await client.query(
+          'UPDATE lobby_players SET team = $1 WHERE lobby_code = $2 AND user_id = $3',
+          [team, lobbyCode, pid]
+        );
+      }
+
+      // Save team names on lobby
+      await client.query(
+        'UPDATE lobbies SET team_names = $1 WHERE code = $2',
+        [JSON.stringify(teamNames), lobbyCode]
+      );
+
+      await client.query('COMMIT');
+
+      const updatedLobby = await loadLobby(lobbyCode);
+      if (updatedLobby) {
+        io.to(lobbyCode).emit('teams-updated', {
+          players: updatedLobby.players.map(p => ({ id: p.id, team: p.team, seat: p.seat })),
+          teamNames,
+        });
+      }
+    } catch (err) {
+      await client.query('ROLLBACK');
+      console.error('Error in set-teams:', err);
+      socket.emit('error-message', { message: 'Failed to update teams' });
     } finally {
       client.release();
     }
@@ -1555,7 +1636,13 @@ io.on('connection', (socket: Socket) => {
         lobby.gameState.currentPlayerIndex = (lobby.gameState.currentPlayerIndex + 1) % 4;
         io.to(lobbyCode).emit('game-state', lobby.gameState);
       } else if (actionType === 'BUILD_HOUSE') {
-        const houseValue = payload.houseValue as 9 | 10 | 11 | 12 | 13 | 14;
+        const houseValue = payload.houseValue as number;
+
+        if (!houseValue || houseValue < 9 || houseValue > 13) {
+          socket.emit('error-message', { message: `Houses can only be built with values 9–13 (got ${houseValue})` });
+          await client.query('ROLLBACK');
+          return;
+        }
 
         if (!hand.some(c => getCardNumericValue(c) === houseValue)) {
           socket.emit('error-message', { message: 'You must hold a card of the house value in hand to build it' });
@@ -1603,7 +1690,7 @@ io.on('connection', (socket: Socket) => {
           const newHouse = {
             id: `house-${Date.now()}`,
             cards: [card, ...(targetCards || [])],
-            value: houseValue,
+            value: houseValue as 9 | 10 | 11 | 12 | 13,
             isPukta: houseValue >= 13,
             createdBy: playerId,
           };
@@ -1644,7 +1731,7 @@ io.on('connection', (socket: Socket) => {
               return;
             }
 
-            targetedHouse.value = houseValue;
+            targetedHouse.value = houseValue as 9 | 10 | 11 | 12 | 13;
             targetedHouse.cards.push(card, ...extraTargetCards);
             targetedHouse.createdBy = playerId;
             targetedHouse.isPukta = checkIfPukta(targetedHouse);

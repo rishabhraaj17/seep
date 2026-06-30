@@ -29,6 +29,7 @@ export async function initDatabase() {
         is_private BOOLEAN DEFAULT FALSE,
         status VARCHAR(20) DEFAULT 'waiting' CHECK (status IN ('waiting', 'bidding', 'playing', 'ended')),
         creator_id VARCHAR(50) REFERENCES users(id) ON DELETE SET NULL,
+        team_names JSONB NOT NULL DEFAULT '{"team1":"Team 1","team2":"Team 2"}'::jsonb,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
@@ -98,6 +99,10 @@ export async function initDatabase() {
 
     await client.query(`
       ALTER TABLE game_states ADD COLUMN IF NOT EXISTS ask_above_8 BOOLEAN NOT NULL DEFAULT FALSE;
+    `);
+
+    await client.query(`
+      ALTER TABLE lobbies ADD COLUMN IF NOT EXISTS team_names JSONB NOT NULL DEFAULT '{"team1":"Team 1","team2":"Team 2"}'::jsonb;
     `);
 
     // Drop old check constraint and recreate to allow 'toss' phase

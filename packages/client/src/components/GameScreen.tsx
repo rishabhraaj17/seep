@@ -60,10 +60,11 @@ export default function GameScreen({
   const [gameState, setGameState] = useState<GameState | null>(null);
   const [selectedCard, setSelectedCard] = useState<Card | null>(null);
   const [capturedCards, setCapturedCards] = useState<Card[]>([]);
-  const [houseValue, setHouseValue] = useState<9 | 10 | 11 | 12 | 13 | 14 | null>(null);
+  const [houseValue, setHouseValue] = useState<9 | 10 | 11 | 12 | 13 | null>(null);
   const [lobbyCode, setLobbyCode] = useState(initialLobbyCode);
   const [hand, setHand] = useState<Card[]>([]);
   const [isBidding, setIsBidding] = useState(true);
+  const [teamNames, setTeamNames] = useState<{ team1: string; team2: string }>({ team1: 'Team 1', team2: 'Team 2' });
   const [notifications, setNotifications] = useState<{ id: number; msg: string; type: 'success' | 'error' | 'info' | 'move' | 'seep'; card?: Card }[]>([]);
   const notifId = useRef(0);
   const [showProfile, setShowProfile] = useState(false);
@@ -121,6 +122,10 @@ export default function GameScreen({
       if (state.gamePhase !== 'bidding') setIsBidding(false);
     });
 
+    socket.on('teams-updated', ({ teamNames: tn }: { teamNames: { team1: string; team2: string } }) => {
+      setTeamNames(tn);
+    });
+
     socket.on('bid-placed', ({ bid, playerId }: { bid: number; playerId: string }) => {
       const bidderName = playerId === userId ? 'You' : (playersRef.current?.find(p => p.id === playerId)?.username || playerId);
       showToast(`📢 ${bidderName} placed a bid of ${bid}!`, 'success');
@@ -161,11 +166,11 @@ export default function GameScreen({
     });
 
     return () => {
-      ['game-started', 'deal-cards', 'game-state', 'bid-placed', 'seep-executed', 'toast-message', 'move-executed', 'error-message'].forEach(e => socket.off(e));
+      ['game-started', 'deal-cards', 'game-state', 'teams-updated', 'bid-placed', 'seep-executed', 'toast-message', 'move-executed', 'error-message'].forEach(e => socket.off(e));
     };
   }, [socket, userId]); // gameState removed to prevent infinite listener re-binding / flickering!
 
-  // Drag and Drop handlers
+  // Drag and Drop handlers — cap house sum at 13
   const handleDragStart = (e: React.DragEvent, card: Card) => {
     e.dataTransfer.setData('cardId', card.id);
   };
@@ -182,25 +187,13 @@ export default function GameScreen({
     const sum = playedVal + targetVal;
 
     if (playedVal === targetVal) {
-      socket.emit('game-action', { 
-        lobbyCode, 
-        action: 'CAPTURE', 
-        payload: { card: playedCard, targetCards: [targetCard] } 
-      });
+      socket.emit('game-action', { lobbyCode, action: 'CAPTURE', payload: { card: playedCard, targetCards: [targetCard] } });
       setHand(prev => prev.filter(c => c.id !== playedCard.id));
-    } else if (sum >= 9 && sum <= 14) {
-      socket.emit('game-action', { 
-        lobbyCode, 
-        action: 'BUILD_HOUSE', 
-        payload: { card: playedCard, targetCards: [targetCard], houseValue: sum } 
-      });
+    } else if (sum >= 9 && sum <= 13) {
+      socket.emit('game-action', { lobbyCode, action: 'BUILD_HOUSE', payload: { card: playedCard, targetCards: [targetCard], houseValue: sum } });
       setHand(prev => prev.filter(c => c.id !== playedCard.id));
     } else {
-      socket.emit('game-action', { 
-        lobbyCode, 
-        action: 'THROW', 
-        payload: { card: playedCard, targetCards: [] } 
-      });
+      socket.emit('game-action', { lobbyCode, action: 'THROW', payload: { card: playedCard, targetCards: [] } });
       setHand(prev => prev.filter(c => c.id !== playedCard.id));
     }
   };
@@ -422,6 +415,7 @@ export default function GameScreen({
         team2Score={gameState?.teamScores.team2}
         round={gameState?.roundNumber}
         seepCount={gameState?.seepCount}
+        teamNames={teamNames}
       />
 
       {/* Floating Menu Toggle Button */}

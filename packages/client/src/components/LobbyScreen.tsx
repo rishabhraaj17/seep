@@ -26,6 +26,13 @@ interface AdminLobby {
   status: string;
 }
 
+const TEAM_NAME_POOL_1 = ['🦁 Lions', '🐉 Dragons', '♠ Spades', '🔥 Flames', '⚡ Bolts', '🌿 Vipers'];
+const TEAM_NAME_POOL_2 = ['🦅 Eagles', '🌊 Tides', '♥ Hearts', '❄ Frost', '🌙 Wolves', '💎 Diamonds'];
+function randomTeamName(team: 1 | 2) {
+  const pool = team === 1 ? TEAM_NAME_POOL_1 : TEAM_NAME_POOL_2;
+  return pool[Math.floor(Math.random() * pool.length)];
+}
+
 export default function LobbyScreen({
   socket,
   userId,
@@ -40,10 +47,13 @@ export default function LobbyScreen({
   const [inputCode, setInputCode] = useState('');
   const [isPrivate, setIsPrivate] = useState(false);
   const [players, setPlayers] = useState<string[]>([]);
+  const [playerDetails, setPlayerDetails] = useState<{ id: string; team: 1 | 2; seat: number }[]>([]);
   const [error, setError] = useState<string>('');
   const [isHost, setIsHost] = useState(false);
   const [inLobby, setInLobby] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [teamNames, setTeamNames] = useState({ team1: randomTeamName(1), team2: randomTeamName(2) });
+  const [showTeamEdit, setShowTeamEdit] = useState(false);
 
   // Profile & Settings states
   const [showProfile, setShowProfile] = useState(false);
@@ -62,12 +72,27 @@ export default function LobbyScreen({
       setInLobby(true);
       setError('');
       setPlayers([userId]);
+      setPlayerDetails([{ id: userId, team: 1, seat: 1 }]);
       onLobbyCreated?.(code);
     });
 
-    socket.on('lobby-state', ({ players: roomPlayers }: { players: string[] }) => {
+    socket.on('lobby-state', ({ players: roomPlayers, playerDetails: pd, teamNames: tn }: {
+      players: string[];
+      playerDetails?: { id: string; team: 1 | 2; seat: number }[];
+      teamNames?: { team1: string; team2: string };
+    }) => {
       setPlayers(roomPlayers);
+      if (pd) setPlayerDetails(pd);
+      if (tn) setTeamNames(tn);
       if (roomPlayers.length > 0) setInLobby(true);
+    });
+
+    socket.on('teams-updated', ({ players: pd, teamNames: tn }: {
+      players: { id: string; team: 1 | 2; seat: number }[];
+      teamNames: { team1: string; team2: string };
+    }) => {
+      setPlayerDetails(pd);
+      setTeamNames(tn);
     });
 
     socket.on('player-joined', (data: { userId: string }) => {
@@ -90,6 +115,7 @@ export default function LobbyScreen({
     return () => {
       socket.off('lobby-created');
       socket.off('lobby-state');
+      socket.off('teams-updated');
       socket.off('player-joined');
       socket.off('game-started');
       socket.off('player-left');
@@ -125,6 +151,19 @@ export default function LobbyScreen({
       socket.emit('add-bot', { lobbyCode });
     }
   }, [socket, lobbyCode]);
+
+  const applyTeams = useCallback(() => {
+    if (!lobbyCode || !isHost || players.length !== 4) return;
+    const assignments = players.map((pid, idx) => ({
+      userId: pid,
+      team: (playerDetails.find(p => p.id === pid)?.team ?? ((idx % 2 === 0) ? 1 : 2)) as 1 | 2,
+    }));
+    socket.emit('set-teams', { lobbyCode, assignments, teamNames });
+  }, [socket, lobbyCode, isHost, players, playerDetails, teamNames]);
+
+  const togglePlayerTeam = (pid: string) => {
+    setPlayerDetails(prev => prev.map(p => p.id === pid ? { ...p, team: p.team === 1 ? 2 : 1 } : p));
+  };
 
   const copyCode = () => {
     navigator.clipboard.writeText(lobbyCode).then(() => {
@@ -213,8 +252,6 @@ export default function LobbyScreen({
     await changeUserRole(username, newRole);
     setShowProfile(false);
   };
-
-  const teamLabels = ['Team 1', 'Team 2', 'Team 1', 'Team 2'];
 
   return (
     <div className="relative min-h-screen w-full flex items-center justify-center p-4 overflow-hidden felt-bg">
@@ -577,30 +614,117 @@ export default function LobbyScreen({
                     </div>
                   </div>
 
-                  {/* Player seats */}
-                  <div className="mb-6 text-left">
+                  {/* Player seats + Team assignment */}
+                  <div className="mb-5 text-left">
                     <div className="flex items-center justify-between mb-3">
                       <h2 className="font-display text-sm font-semibold tracking-[0.2em] uppercase" style={{ color: 'rgba(212,175,55,0.7)' }}>
                         Players · {players.length} / 4
                       </h2>
-                      
-                      {/* Bot Adding button for dev testing */}
-                      {players.length < 4 && (
-                        <button
-                          onClick={addBot}
-                          className="px-2.5 py-1 rounded bg-gold-500/10 border border-gold-500/30 text-[10px] font-bold text-gold-300 uppercase tracking-wider hover:bg-gold-500/20 transition-all cursor-pointer"
-                          style={{ minHeight: '28px' }}
-                        >
-                          🤖 Add Bot Player
-                        </button>
-                      )}
+                      <div className="flex items-center gap-2">
+                        {isHost && players.length > 1 && (
+                          <button
+                            onClick={() => setShowTeamEdit(e => !e)}
+                            className="px-2.5 py-1 rounded border text-[10px] font-bold uppercase tracking-wider transition-all cursor-pointer"
+                            style={{ background: showTeamEdit ? 'rgba(212,175,55,0.2)' : 'rgba(0,0,0,0.3)', borderColor: 'rgba(212,175,55,0.4)', color: '#d4af37', minHeight: '28px' }}
+                          >
+                            {showTeamEdit ? '✓ Done' : '🏷 Teams'}
+                          </button>
+                        )}
+                        {players.length < 4 && (
+                          <button
+                            onClick={addBot}
+                            className="px-2.5 py-1 rounded bg-gold-500/10 border border-gold-500/30 text-[10px] font-bold text-gold-300 uppercase tracking-wider hover:bg-gold-500/20 transition-all cursor-pointer"
+                            style={{ minHeight: '28px' }}
+                          >
+                            🤖 Add Bot
+                          </button>
+                        )}
+                      </div>
                     </div>
-                    
+
+                    {/* Team management panel */}
+                    <AnimatePresence>
+                      {showTeamEdit && isHost && (
+                        <motion.div
+                          initial={{ opacity: 0, height: 0 }}
+                          animate={{ opacity: 1, height: 'auto' }}
+                          exit={{ opacity: 0, height: 0 }}
+                          className="mb-4 rounded-xl p-4 overflow-hidden"
+                          style={{ background: 'rgba(0,0,0,0.3)', border: '1px solid rgba(212,175,55,0.2)' }}
+                        >
+                          <p className="text-[10px] uppercase tracking-widest text-gold-gradient font-bold mb-3">
+                            ✦ Assign Teams — click a player to switch their team
+                          </p>
+
+                          {/* Team name inputs */}
+                          <div className="grid grid-cols-2 gap-3 mb-4">
+                            {(['team1', 'team2'] as const).map(tk => (
+                              <div key={tk}>
+                                <label className="text-[9px] uppercase tracking-wider text-emerald-100/40 block mb-1">
+                                  {tk === 'team1' ? '🟢 Team 1 Name' : '🔵 Team 2 Name'}
+                                </label>
+                                <input
+                                  value={teamNames[tk]}
+                                  onChange={e => setTeamNames(prev => ({ ...prev, [tk]: e.target.value }))}
+                                  className="input-premium w-full px-2.5 py-1.5 rounded-lg text-xs"
+                                  maxLength={20}
+                                />
+                              </div>
+                            ))}
+                          </div>
+
+                          {/* Players grouped by team */}
+                          <div className="grid grid-cols-2 gap-2 mb-4">
+                            {([1, 2] as const).map(t => (
+                              <div key={t} className="rounded-lg p-2.5" style={{ background: t === 1 ? 'rgba(22,48,32,0.5)' : 'rgba(15,30,60,0.5)', border: `1px solid ${t === 1 ? 'rgba(22,160,133,0.25)' : 'rgba(59,130,246,0.25)'}` }}>
+                                <div className={`text-[10px] font-bold uppercase tracking-wider mb-2 ${t === 1 ? 'text-emerald-400' : 'text-blue-400'}`}>
+                                  {t === 1 ? teamNames.team1 : teamNames.team2}
+                                </div>
+                                {players.filter(pid => {
+                                  const det = playerDetails.find(p => p.id === pid);
+                                  return det ? det.team === t : t === (players.indexOf(pid) % 2 === 0 ? 1 : 2);
+                                }).map(pid => (
+                                  <button
+                                    key={pid}
+                                    onClick={() => togglePlayerTeam(pid)}
+                                    className="w-full text-left px-2 py-1 rounded text-xs font-semibold mb-1 transition-all hover:brightness-125 cursor-pointer"
+                                    style={{ background: pid === userId ? 'rgba(212,175,55,0.15)' : 'rgba(255,255,255,0.05)', color: pid === userId ? '#d4af37' : '#f5f0e8', border: '1px solid rgba(255,255,255,0.07)', minHeight: '28px' }}
+                                    title="Click to move to other team"
+                                  >
+                                    {pid === userId ? '⭐ You' : pid.startsWith('Bot_') ? `🤖 ${pid}` : pid} ↔
+                                  </button>
+                                ))}
+                                {players.filter(pid => {
+                                  const det = playerDetails.find(p => p.id === pid);
+                                  return det ? det.team === t : t === (players.indexOf(pid) % 2 === 0 ? 1 : 2);
+                                }).length === 0 && (
+                                  <div className="text-[10px] text-emerald-100/30 italic">Empty</div>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+
+                          <button
+                            onClick={() => { applyTeams(); setShowTeamEdit(false); }}
+                            className="btn-gold w-full py-2 rounded-xl text-[10px] tracking-widest uppercase"
+                            disabled={players.length !== 4}
+                          >
+                            ✦ Apply Team Setup
+                          </button>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+
+                    {/* Default seat cards */}
                     <div className="grid grid-cols-2 gap-3">
                       {Array.from({ length: 4 }).map((_, i) => {
                         const player = players[i];
                         const isMe = player === userId;
                         const isBot = player?.startsWith('Bot_');
+                        const detail = playerDetails.find(p => p.id === player);
+                        const team = detail?.team ?? (i % 2 === 0 ? 1 : 2);
+                        const teamLabel = team === 1 ? teamNames.team1 : teamNames.team2;
+                        const teamColor = team === 1 ? '#4ade80' : '#60a5fa';
                         return (
                           <motion.div
                             key={i}
@@ -612,9 +736,7 @@ export default function LobbyScreen({
                             <div className="flex items-center gap-3">
                               <div className="w-9 h-9 rounded-full flex items-center justify-center text-sm font-bold flex-shrink-0"
                                 style={{
-                                  background: player
-                                    ? (isMe ? 'rgba(212,175,55,0.3)' : 'rgba(22,48,32,0.6)')
-                                    : 'rgba(0,0,0,0.3)',
+                                  background: player ? (isMe ? 'rgba(212,175,55,0.3)' : 'rgba(22,48,32,0.6)') : 'rgba(0,0,0,0.3)',
                                   border: `1px solid ${player ? (isMe ? 'rgba(212,175,55,0.6)' : 'rgba(212,175,55,0.2)') : 'rgba(212,175,55,0.1)'}`,
                                 }}
                               >
@@ -626,8 +748,9 @@ export default function LobbyScreen({
                                 <div className="text-sm font-semibold truncate max-w-[120px]" style={{ color: player ? (isMe ? '#d4af37' : '#f5f0e8') : 'rgba(245,240,232,0.2)' }}>
                                   {player ? (isMe ? 'You' : player) : 'Waiting...'}
                                 </div>
-                                <div className="text-xs mt-0.5" style={{ color: 'rgba(245,240,232,0.35)' }}>
-                                  Seat {i + 1} · {teamLabels[i]}
+                                <div className="text-xs mt-0.5 flex items-center gap-1">
+                                  <span style={{ color: 'rgba(245,240,232,0.35)' }}>Seat {i + 1} ·</span>
+                                  {player && <span className="font-semibold text-[10px]" style={{ color: teamColor }}>{teamLabel}</span>}
                                 </div>
                               </div>
                             </div>
@@ -636,6 +759,7 @@ export default function LobbyScreen({
                       })}
                     </div>
                   </div>
+
 
                   {/* Progress bar */}
                   <div className="mb-5">
