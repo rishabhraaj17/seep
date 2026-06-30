@@ -474,8 +474,8 @@ async function checkAndTriggerBotTurn(lobbyCode: string) {
         const hasCompletedFirstTurn = currentLobby.gameState.firstTurnCompleted.includes(currentPlayer.id);
         const playerIndex = currentLobby.gameState.currentPlayerIndex;
 
-        // Enforce visible hand limit
-        const visibleHand = (playerIndex === 0 || hasCompletedFirstTurn) ? hand : hand.slice(0, 4);
+        // Enforce visible hand limit (dealer index 3 is exempt)
+        const visibleHand = (playerIndex === 3 || playerIndex === 0 || hasCompletedFirstTurn) ? hand : hand.slice(0, 4);
         if (visibleHand.length === 0) return;
 
         let playAction = 'THROW';
@@ -491,17 +491,17 @@ async function checkAndTriggerBotTurn(lobbyCode: string) {
           if (bidCard) {
             selectedCard = bidCard;
             const capturable = findCapturableCardsForBot(bidCard, currentLobby.gameState.floor);
-            const matchingHouse = currentLobby.gameState.houses.find(h => h.value === bidVal);
-            if (capturable.length > 0 || matchingHouse) {
+            if (capturable.length > 0) {
               playAction = 'CAPTURE';
               targetCards = capturable;
             } else {
-              playAction = 'BUILD_HOUSE';
+              playAction = 'THROW';
               targetCards = [];
-              houseValue = bidVal;
             }
           } else {
             selectedCard = visibleHand[0];
+            playAction = 'THROW';
+            targetCards = [];
           }
         } else {
           // Regular bot logic
@@ -872,10 +872,17 @@ io.on('connection', (socket: Socket) => {
       if (playerIndex === -1) return;
 
       const hand = lobby.hands.get(userId) || [];
-      const hasCompletedFirstTurn = lobby.gameState.firstTurnCompleted.includes(userId);
-      const visibleHand = (lobby.gameState.gamePhase === 'bidding' || lobby.gameState.gamePhase === 'toss')
-        ? hand.slice(0, 4)
-        : ((playerIndex === 0 || hasCompletedFirstTurn) ? hand : hand.slice(0, 4));
+      let visibleHand = hand;
+      if (playerIndex !== 3) {
+        if (lobby.gameState.gamePhase === 'toss' || lobby.gameState.gamePhase === 'bidding') {
+          visibleHand = hand.slice(0, 4);
+        } else {
+          const hasCompletedFirstTurn = lobby.gameState.firstTurnCompleted.includes(userId);
+          if (playerIndex !== 0 && !hasCompletedFirstTurn) {
+            visibleHand = hand.slice(0, 4);
+          }
+        }
+      }
 
       socket.emit('deal-cards', {
         lobbyCode,
@@ -1119,7 +1126,7 @@ io.on('connection', (socket: Socket) => {
       const hand = lobby.hands.get(playerId) || [];
       const hasCompletedFirstTurn = lobby.gameState.firstTurnCompleted.includes(playerId);
       const playerIndex = lobby.players.findIndex(p => p.id === playerId);
-      const visibleHand = (playerIndex === 0 || hasCompletedFirstTurn) ? hand : hand.slice(0, 4);
+      const visibleHand = (playerIndex === 3 || playerIndex === 0 || hasCompletedFirstTurn) ? hand : hand.slice(0, 4);
 
       if (!visibleHand.some(c => c.id === card.id)) {
         socket.emit('error-message', { message: 'Card not in hand' });
@@ -1133,9 +1140,11 @@ io.on('connection', (socket: Socket) => {
         const bidVal = lobby.gameState.bid?.value;
         if (bidVal !== undefined) {
           if (action === 'THROW') {
-            socket.emit('error-message', { message: 'Your first turn must be to capture or build the called house value' });
-            await client.query('ROLLBACK');
-            return;
+            if (getCardNumericValue(card) !== bidVal) {
+              socket.emit('error-message', { message: `If you throw on your first turn, it must be the called card value (${bidVal})` });
+              await client.query('ROLLBACK');
+              return;
+            }
           } else if (action === 'CAPTURE') {
             if (getCardNumericValue(card) !== bidVal) {
               socket.emit('error-message', { message: `Your first capture must be with a card of the bid value (${bidVal})` });
