@@ -6,6 +6,7 @@ import PlayerHand from './PlayerHand';
 import FloorCards from './FloorCards';
 import Scoreboard from './Scoreboard';
 import BiddingPhase from './BiddingPhase';
+import TossPhase from './TossPhase';
 
 interface GameScreenProps {
   socket: Socket;
@@ -58,6 +59,7 @@ export default function GameScreen({
   const [showScoreboard, setShowScoreboard] = useState(false);
   const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' | 'info' } | null>(null);
   const [showProfile, setShowProfile] = useState(false);
+  const [showGuide, setShowGuide] = useState(true);
 
   const showToast = (msg: string, type: 'success' | 'error' | 'info' = 'info', duration = 3000) => {
     setToast({ msg, type });
@@ -139,6 +141,10 @@ export default function GameScreen({
     setHand(prev => prev.filter(c => c.id !== selectedCard.id));
     setSelectedCard(null); setHouseValue(null); setCapturedCards([]);
   };
+
+  if (gameState?.gamePhase === 'toss') {
+    return <TossPhase gameState={gameState} userId={userId} />;
+  }
 
   if (isBidding || gameState?.gamePhase === 'bidding') {
     return (
@@ -257,6 +263,39 @@ export default function GameScreen({
           round={gameState?.roundNumber}
           seepCount={gameState?.seepCount}
         />
+      </div>
+
+      {/* Dynamic Rules Guide Panel */}
+      <div className="absolute top-6 right-6 z-40 hidden lg:block">
+        <div className="glass-panel rounded-xl p-4 w-72" style={{ background: 'rgba(9,18,11,0.95)', border: '1px solid rgba(212,175,55,0.25)' }}>
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-xs font-display tracking-widest uppercase text-gold-gradient font-bold">✦ Dynamic Guide</span>
+            <button onClick={() => setShowGuide(!showGuide)} className="text-xs text-gold-gradient hover:underline bg-transparent border-0 cursor-pointer min-h-0 py-0 px-1">
+              {showGuide ? 'Hide' : 'Show'}
+            </button>
+          </div>
+          {showGuide && (
+            <div className="text-[11px] leading-relaxed flex flex-col gap-2" style={{ color: 'rgba(245,240,232,0.75)' }}>
+              <div className="divider-gold opacity-30" style={{ margin: '4px 0' }} />
+              {gameState?.gamePhase === 'playing' && (
+                <>
+                  <p><strong>🎯 Goal:</strong> First team to 100 points wins.</p>
+                  <p><strong>♠️ Spades:</strong> Spades count for face value (A=1, J=11, Q=12, K=13).</p>
+                  <p><strong>♦️ Diamonds:</strong> 10♦ counts for 6 points. Other Aces = 1 point.</p>
+                  <p><strong>🏠 Houses:</strong> Max 2 houses. Unlayered houses (Kacha) can be distorted by opponents. Layered houses (2+ cards or value 13) are cemented (Pukta).</p>
+                  <p><strong>🌊 Seeps:</strong> Clearing the floor = +50 points. Seeps cancel out at round end.</p>
+                  <p><strong>⏳ First Turn:</strong> Non-dealers start with 4 cards and receive remaining 8 after their first move.</p>
+                </>
+              )}
+              {((gameState?.gamePhase as string) === 'bidding' || isBidding) && (
+                <>
+                  <p><strong>Bidding Phase:</strong> The starting dealer must declare a bid value (9–13) based on their first 4 cards.</p>
+                  <p><strong>Redeal:</strong> If the dealer has no cards &ge; 9 in their hand, cards are redealt.</p>
+                </>
+              )}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Mobile scoreboard */}

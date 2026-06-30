@@ -37,7 +37,7 @@ export interface GameState {
   teamScores: { team1: number; team2: number };
   capturedCards: { team1: Card[]; team2: Card[] };
   seepCount: { team1: number; team2: number };
-  gamePhase: 'bidding' | 'playing' | 'roundEnd' | 'gameEnd';
+  gamePhase: 'toss' | 'bidding' | 'playing' | 'roundEnd' | 'gameEnd';
   bid?: {
     playerId: string;
     value: number;
@@ -45,6 +45,8 @@ export interface GameState {
   };
   lastCaptureTeam?: 1 | 2;
   firstTurnCompleted: string[];
+  tossWinner?: string;
+  tossHistory?: { playerId: string; card: Card }[];
 }
 
 interface LobbyState {
@@ -188,7 +190,7 @@ async function loadLobby(code: string, client?: any): Promise<LobbyState | null>
   };
 
   const gsRes = await db.query(
-    'SELECT floor, houses, hands, current_player_index, round_number, team_scores, captured_cards, team_seeps, game_phase, bid, last_capture_team, first_turn_completed FROM game_states WHERE lobby_code = $1',
+    'SELECT floor, houses, hands, current_player_index, round_number, team_scores, captured_cards, team_seeps, game_phase, bid, last_capture_team, first_turn_completed, toss_winner, toss_history FROM game_states WHERE lobby_code = $1',
     [code]
   );
 
@@ -207,6 +209,8 @@ async function loadLobby(code: string, client?: any): Promise<LobbyState | null>
       bid: gsRow.bid || undefined,
       lastCaptureTeam: gsRow.last_capture_team || undefined,
       firstTurnCompleted: gsRow.first_turn_completed || [],
+      tossWinner: gsRow.toss_winner || undefined,
+      tossHistory: gsRow.toss_history || [],
     };
     const hands = new Map<string, Card[]>();
     if (gsRow.hands) {
@@ -245,8 +249,9 @@ async function saveLobby(lobby: LobbyState, client?: any): Promise<void> {
       await db.query(
         `INSERT INTO game_states (
           lobby_code, floor, houses, hands, current_player_index, round_number, 
-          team_scores, captured_cards, team_seeps, game_phase, bid, last_capture_team, first_turn_completed
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+          team_scores, captured_cards, team_seeps, game_phase, bid, last_capture_team, first_turn_completed,
+          toss_winner, toss_history
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
          ON CONFLICT (lobby_code) DO UPDATE SET
           floor = EXCLUDED.floor,
           houses = EXCLUDED.houses,
@@ -260,6 +265,8 @@ async function saveLobby(lobby: LobbyState, client?: any): Promise<void> {
           bid = EXCLUDED.bid,
           last_capture_team = EXCLUDED.last_capture_team,
           first_turn_completed = EXCLUDED.first_turn_completed,
+          toss_winner = EXCLUDED.toss_winner,
+          toss_history = EXCLUDED.toss_history,
           updated_at = CURRENT_TIMESTAMP`,
         [
           lobby.code,
@@ -275,6 +282,8 @@ async function saveLobby(lobby: LobbyState, client?: any): Promise<void> {
           lobby.gameState.bid ? JSON.stringify(lobby.gameState.bid) : null,
           lobby.gameState.lastCaptureTeam || null,
           JSON.stringify(lobby.gameState.firstTurnCompleted || []),
+          lobby.gameState.tossWinner || null,
+          JSON.stringify(lobby.gameState.tossHistory || []),
         ]
       );
     }
@@ -611,6 +620,53 @@ io.use((socket, next) => {
 app.use(cors({ origin: ALLOWED_ORIGIN }));
 app.use(express.json());
 
+async function proceedToBidding(lobbyCode: string) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const lockRes = await client.query('SELECT 1 FROM lobbies WHERE code = $1 FOR UPDATE', [lobbyCode]);
+    if (lockRes.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return;
+    }
+    const lobby = await loadLobby(lobbyCode, client);
+    if (!lobby || !lobby.gameState || lobby.gameState.gamePhase !== 'toss') {
+      await client.query('ROLLBACK');
+      return;
+    }
+
+    lobby.gameState.gamePhase = 'bidding';
+    await saveLobby(lobby, client);
+    await client.query('COMMIT');
+
+    io.to(lobbyCode).emit('game-state', lobby.gameState);
+
+    const gameState = lobby.gameState!;
+    const hands = lobby.hands!;
+
+    // Deal first 4 cards to all players
+    lobby.players.forEach((p, i) => {
+      const hand = hands.get(p.id) || [];
+      const visibleHand = hand.slice(0, 4);
+      io.to(p.socketId).emit('deal-cards', {
+        lobbyCode,
+        floor: gameState.floor,
+        hand: visibleHand,
+        playerIndex: i,
+        biddingPlayerIndex: 0,
+      });
+    });
+
+    // If dealer (player 0) is a bot, trigger their bidding choice
+    await checkAndTriggerBotTurn(lobbyCode);
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Error proceeding to bidding:', err);
+  } finally {
+    client.release();
+  }
+}
+
 // Socket.io connection handling
 io.on('connection', (socket: Socket) => {
   console.log(`Player connected: ${socket.id}`);
@@ -817,7 +873,9 @@ io.on('connection', (socket: Socket) => {
 
       const hand = lobby.hands.get(userId) || [];
       const hasCompletedFirstTurn = lobby.gameState.firstTurnCompleted.includes(userId);
-      const visibleHand = (playerIndex === 0 || hasCompletedFirstTurn) ? hand : hand.slice(0, 4);
+      const visibleHand = (lobby.gameState.gamePhase === 'bidding' || lobby.gameState.gamePhase === 'toss')
+        ? hand.slice(0, 4)
+        : ((playerIndex === 0 || hasCompletedFirstTurn) ? hand : hand.slice(0, 4));
 
       socket.emit('deal-cards', {
         lobbyCode,
@@ -838,12 +896,52 @@ io.on('connection', (socket: Socket) => {
   // Start game
   socket.on('start-game', async ({ lobbyCode }: { lobbyCode: string }) => {
     const userId = socket.data.userId as string;
+    const client = await pool.connect();
     try {
-      const lobby = await loadLobby(lobbyCode);
+      await client.query('BEGIN');
+      const lockRes = await client.query('SELECT 1 FROM lobbies WHERE code = $1 FOR UPDATE', [lobbyCode]);
+      if (lockRes.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return;
+      }
+
+      const lobby = await loadLobby(lobbyCode, client);
       if (lobby && lobby.players.length === 4 && lobby.players.some(p => p.id === userId)) {
+        
+        // 1. Perform the Jack Toss
+        const tossDeck = shuffle(createDeck());
+        const tossHistory: { playerId: string; card: Card }[] = [];
+        let tossWinnerId = '';
+        let deckIdx = 0;
+        
+        while (!tossWinnerId && deckIdx < tossDeck.length) {
+          for (let i = 0; i < lobby.players.length; i++) {
+            const card = tossDeck[deckIdx++];
+            tossHistory.push({ playerId: lobby.players[i].id, card });
+            if (card.rank === 'J') {
+              tossWinnerId = lobby.players[i].id;
+              break;
+            }
+          }
+        }
+
+        // 2. Rotate players so that toss winner has seat = 1 (player index 0)
+        const winnerIndex = lobby.players.findIndex(p => p.id === tossWinnerId);
+        if (winnerIndex !== -1) {
+          const rotatedPlayers = [...lobby.players.slice(winnerIndex), ...lobby.players.slice(0, winnerIndex)];
+          for (let i = 0; i < rotatedPlayers.length; i++) {
+            await client.query(
+              'UPDATE lobby_players SET seat = $1, team = $2 WHERE lobby_code = $3 AND user_id = $4',
+              [i + 1, (i === 0 || i === 2) ? 1 : 2, lobbyCode, rotatedPlayers[i].id]
+            );
+            rotatedPlayers[i].team = (i === 0 || i === 2) ? 1 : 2;
+          }
+          lobby.players = rotatedPlayers;
+        }
+
         lobby.status = 'bidding';
 
-        // Deal cards
+        // 3. Deal cards (with guaranteed bidding card >= 9 in dealer's first 4 cards)
         let deck: Card[] = [];
         let floorCards: Card[] = [];
         let hands: Card[][] = [];
@@ -861,10 +959,10 @@ io.on('connection', (socket: Socket) => {
             deckIndex += 12;
           }
 
-          // Caller (player 0) constraint check
-          const hasCardGe9 = hands[0].some(c => {
-            const val = rankToValue[c.rank];
-            return val >= 9 && val <= 14;
+          // Dealer (seat 1, index 0) constraint check on first 4 cards
+          const hasCardGe9 = hands[0].slice(0, 4).some(c => {
+            const val = getCardNumericValue(c);
+            return val >= 9 && val <= 13;
           });
           if (hasCardGe9) {
             redeal = false;
@@ -885,34 +983,35 @@ io.on('connection', (socket: Socket) => {
           teamScores: { team1: 0, team2: 0 },
           capturedCards: { team1: [], team2: [] },
           seepCount: { team1: 0, team2: 0 },
-          gamePhase: 'bidding',
+          gamePhase: 'toss',
           bid: undefined,
           lastCaptureTeam: undefined,
           firstTurnCompleted: [],
+          tossWinner: tossWinnerId,
+          tossHistory,
         };
 
-        await saveLobby(lobby);
+        await saveLobby(lobby, client);
+        await client.query('COMMIT');
 
         io.to(lobbyCode).emit('game-started', { lobbyCode });
+        io.to(lobbyCode).emit('game-state', lobby.gameState);
 
-        lobby.players.forEach((p, i) => {
-          const visibleHand = (i === 0) ? hands[i] : hands[i].slice(0, 4);
-          io.to(p.socketId).emit('deal-cards', {
-            lobbyCode,
-            floor: floorCards,
-            hand: visibleHand,
-            playerIndex: i,
-            biddingPlayerIndex: 0,
-          });
-        });
+        // Automatically proceed to bidding after 5 seconds to show toss deals in UI
+        setTimeout(async () => {
+          await proceedToBidding(lobbyCode);
+        }, 5000);
 
-        await checkAndTriggerBotTurn(lobbyCode);
       } else {
+        await client.query('ROLLBACK');
         socket.emit('error-message', { message: 'Need 4 players to start' });
       }
     } catch (err) {
+      await client.query('ROLLBACK');
       console.error('Error starting game:', err);
       socket.emit('error-message', { message: 'Failed to start game' });
+    } finally {
+      client.release();
     }
   });
 
@@ -962,6 +1061,16 @@ io.on('connection', (socket: Socket) => {
 
       io.to(lobbyCode).emit('bid-placed', { bid, playerId });
       io.to(lobbyCode).emit('game-state', lobby.gameState);
+
+      if (!biddingPlayer.id.startsWith('Bot_')) {
+        io.to(socket.id).emit('deal-cards', {
+          lobbyCode,
+          floor: lobby.gameState.floor,
+          hand: hand, // full 12 cards
+          playerIndex: 0,
+          biddingPlayerIndex: 0,
+        });
+      }
 
       await checkAndTriggerBotTurn(lobbyCode);
     } catch (err) {

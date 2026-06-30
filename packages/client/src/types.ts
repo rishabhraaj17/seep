@@ -30,7 +30,7 @@ export interface GameState {
   teamScores: { team1: number; team2: number };
   capturedCards: { team1: Card[]; team2: Card[] };
   seepCount: { team1: number; team2: number };
-  gamePhase: 'bidding' | 'playing' | 'roundEnd' | 'gameEnd';
+  gamePhase: 'toss' | 'bidding' | 'playing' | 'roundEnd' | 'gameEnd';
   bid?: {
     playerId: string;
     value: number;
@@ -38,4 +38,6 @@ export interface GameState {
   };
   lastCaptureTeam?: 1 | 2;
   firstTurnCompleted: string[];
+  tossWinner?: string;
+  tossHistory?: { playerId: string; card: Card }[];
 }

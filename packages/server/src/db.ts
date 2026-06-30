@@ -63,16 +63,32 @@ export async function initDatabase() {
         team_scores JSONB NOT NULL,
         captured_cards JSONB NOT NULL,
         team_seeps JSONB NOT NULL,
-        game_phase VARCHAR(20) NOT NULL CHECK (game_phase IN ('bidding', 'playing', 'roundEnd', 'gameEnd')),
+        game_phase VARCHAR(20) NOT NULL CHECK (game_phase IN ('toss', 'bidding', 'playing', 'roundEnd', 'gameEnd')),
         bid JSONB,
         last_capture_team INTEGER CHECK (last_capture_team IN (1, 2)),
         first_turn_completed JSONB NOT NULL DEFAULT '[]'::jsonb,
+        toss_winner VARCHAR(50),
+        toss_history JSONB NOT NULL DEFAULT '[]'::jsonb,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
 
     await client.query(`
       ALTER TABLE game_states ADD COLUMN IF NOT EXISTS first_turn_completed JSONB NOT NULL DEFAULT '[]'::jsonb;
+    `);
+
+    await client.query(`
+      ALTER TABLE game_states ADD COLUMN IF NOT EXISTS toss_winner VARCHAR(50);
+    `);
+
+    await client.query(`
+      ALTER TABLE game_states ADD COLUMN IF NOT EXISTS toss_history JSONB NOT NULL DEFAULT '[]'::jsonb;
+    `);
+
+    // Drop old check constraint and recreate to allow 'toss' phase
+    await client.query(`
+      ALTER TABLE game_states DROP CONSTRAINT IF EXISTS game_states_game_phase_check;
+      ALTER TABLE game_states ADD CONSTRAINT game_states_game_phase_check CHECK (game_phase IN ('toss', 'bidding', 'playing', 'roundEnd', 'gameEnd'));
     `);
 
     await client.query('COMMIT');
