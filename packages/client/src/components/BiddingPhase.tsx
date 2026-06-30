@@ -111,7 +111,7 @@ export default function BiddingPhase({ socket, userId, lobbyCode, hand, floorCar
                     initial={{ scale: 0, y: -20 }}
                     animate={{ scale: 1, y: 0 }}
                     transition={{ delay: i * 0.08, type: 'spring', stiffness: 350 }}>
-                    <PlayingCard card={{ ...card, faceDown: false }} size="md" />
+                    <PlayingCard card={card} size="md" />
                   </motion.div>
                 )) : (
                   <span className="text-sm" style={{ color: 'rgba(245,240,232,0.25)' }}>No floor cards</span>

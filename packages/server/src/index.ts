@@ -128,6 +128,35 @@ function canSumTo(target: number, cards: Card[]): boolean {
   return false;
 }
 
+function canPartitionIntoValue(cards: Card[], target: number): boolean {
+  if (cards.length === 0) return true;
+  const firstCard = cards[0];
+  const firstVal = getCardNumericValue(firstCard);
+  if (firstVal > target) return false;
+  if (firstVal === target) {
+    return canPartitionIntoValue(cards.slice(1), target);
+  }
+  return findComboAndPartition(cards.slice(1), target - firstVal, target);
+}
+
+function findComboAndPartition(cards: Card[], targetSum: number, target: number): boolean {
+  if (targetSum === 0) return true;
+  if (cards.length === 0) return false;
+  
+  for (let i = 0; i < cards.length; i++) {
+    const val = getCardNumericValue(cards[i]);
+    if (val <= targetSum) {
+      const remainingCards = [...cards.slice(0, i), ...cards.slice(i + 1)];
+      if (val === targetSum) {
+        if (canPartitionIntoValue(remainingCards, target)) return true;
+      } else {
+        if (findComboAndPartition(remainingCards, targetSum - val, target)) return true;
+      }
+    }
+  }
+  return false;
+}
+
 // Calculate total points for captured cards
 function calculatePoints(cards: Card[]): number {
   return cards.reduce((sum, card) => sum + getPointValue(card), 0);
@@ -135,8 +164,8 @@ function calculatePoints(cards: Card[]): number {
 
 function checkIfPukta(house: House): boolean {
   if (house.value >= 13) return true;
-  const cardsOfHouseValue = house.cards.filter(c => getCardNumericValue(c) === house.value);
-  return cardsOfHouseValue.length >= 2;
+  const totalSum = house.cards.reduce((sum, c) => sum + getCardNumericValue(c), 0);
+  return totalSum >= 2 * house.value;
 }
 
 // Bot helper to find capturable cards
@@ -686,7 +715,25 @@ async function checkAndTriggerBotTurn(lobbyCode: string) {
           });
           currentLobby.gameState.houses.push(newHouse);
         } else {
-          currentLobby.gameState.floor.push(selectedCard);
+          if (isCallerFirstTurn) {
+            const bidVal = currentLobby.gameState.bid?.value;
+            if (bidVal !== undefined) {
+              const newHouse = {
+                id: `house-${Date.now()}`,
+                cards: [selectedCard],
+                value: bidVal as 9 | 10 | 11 | 12 | 13,
+                isPukta: bidVal >= 13,
+                createdBy: currentPlayer.id,
+              };
+              currentLobby.gameState.houses.push(newHouse);
+              playAction = 'BUILD_HOUSE';
+              houseValue = bidVal;
+            } else {
+              currentLobby.gameState.floor.push(selectedCard);
+            }
+          } else {
+            currentLobby.gameState.floor.push(selectedCard);
+          }
         }
 
         currentLobby.hands?.set(currentPlayer.id, hand.filter(c => c.id !== selectedCard.id));
@@ -784,9 +831,10 @@ async function proceedToBidding(lobbyCode: string) {
     lobby.players.forEach((p, i) => {
       const hand = hands.get(p.id) || [];
       const visibleHand = hand.slice(0, 4);
+      const visibleFloor = gameState.floor.map(c => ({ ...c, faceDown: true }));
       io.to(p.socketId).emit('deal-cards', {
         lobbyCode,
-        floor: gameState.floor,
+        floor: visibleFloor,
         hand: visibleHand,
         playerIndex: i,
         biddingPlayerIndex: 0,
@@ -1114,9 +1162,14 @@ io.on('connection', (socket: Socket) => {
         }
       }
 
+      let visibleFloor = lobby.gameState.floor;
+      if (lobby.gameState.gamePhase === 'toss' || lobby.gameState.gamePhase === 'bidding') {
+        visibleFloor = lobby.gameState.floor.map(c => ({ ...c, faceDown: true }));
+      }
+
       socket.emit('deal-cards', {
         lobbyCode,
-        floor: lobby.gameState.floor,
+        floor: visibleFloor,
         hand: visibleHand,
         playerIndex,
         biddingPlayerIndex: 0,
@@ -1614,7 +1667,27 @@ io.on('connection', (socket: Socket) => {
         lobby.gameState.currentPlayerIndex = (lobby.gameState.currentPlayerIndex + 1) % 4;
         io.to(lobbyCode).emit('game-state', lobby.gameState);
       } else if (actionType === 'THROW') {
-        lobby.gameState.floor.push(card);
+        const isCallerFirstTurn = (playerIndex === 0 && !hasCompletedFirstTurn);
+        if (isCallerFirstTurn) {
+          const bidVal = lobby.gameState.bid?.value;
+          if (bidVal !== undefined) {
+            const newHouse = {
+              id: `house-${Date.now()}`,
+              cards: [card],
+              value: bidVal as 9 | 10 | 11 | 12 | 13,
+              isPukta: bidVal >= 13,
+              createdBy: playerId,
+            };
+            lobby.gameState.houses.push(newHouse);
+            // Change actionType to BUILD_HOUSE so it logs and broadcasts correctly
+            actionType = 'BUILD_HOUSE';
+            data.action = 'BUILD_HOUSE';
+          } else {
+            lobby.gameState.floor.push(card);
+          }
+        } else {
+          lobby.gameState.floor.push(card);
+        }
 
         lobby.hands.set(playerId, hand.filter(c => c.id !== card.id));
 
@@ -1679,29 +1752,27 @@ io.on('connection', (socket: Socket) => {
             io.to(lobbyCode).emit('game-state', lobby.gameState);
 
           } else {
+            if (!canPartitionIntoValue([card, ...(targetCards || [])], houseValue)) {
+              socket.emit('error-message', { message: `Played card and target cards cannot be grouped into layers of value ${houseValue}` });
+              await client.query('ROLLBACK');
+              return;
+            }
 
-          const targetSum = (targetCards || []).reduce((sum, c) => sum + getCardNumericValue(c), 0);
-          if (getCardNumericValue(card) + targetSum !== houseValue) {
-            socket.emit('error-message', { message: `Played card and target cards must sum to ${houseValue}` });
-            await client.query('ROLLBACK');
-            return;
+            const newHouse = {
+              id: `house-${Date.now()}`,
+              cards: [card, ...(targetCards || [])],
+              value: houseValue as 9 | 10 | 11 | 12 | 13,
+              isPukta: houseValue >= 13,
+              createdBy: playerId,
+            };
+
+            (targetCards || []).forEach((c: Card) => {
+              lobby.gameState!.floor = lobby.gameState!.floor.filter(fc => fc.id !== c.id);
+            });
+            lobby.gameState.houses.push(newHouse);
           }
-
-          const newHouse = {
-            id: `house-${Date.now()}`,
-            cards: [card, ...(targetCards || [])],
-            value: houseValue as 9 | 10 | 11 | 12 | 13,
-            isPukta: houseValue >= 13,
-            createdBy: playerId,
-          };
-
-          (targetCards || []).forEach((c: Card) => {
-            lobby.gameState!.floor = lobby.gameState!.floor.filter(fc => fc.id !== c.id);
-          });
-          lobby.gameState.houses.push(newHouse);
-        }
-      } else {
-        const targetedHouse = lobby.gameState.houses[targetedHouseIndex];
+        } else {
+          const targetedHouse = lobby.gameState.houses[targetedHouseIndex];
           const isDistortion = targetedHouse.value !== houseValue;
 
           if (isDistortion) {
@@ -1723,10 +1794,8 @@ io.on('connection', (socket: Socket) => {
             }
 
             const extraTargetCards = (targetCards || []).filter(tc => !targetedHouse.cards.some(hc => hc.id === tc.id));
-            const extraSum = extraTargetCards.reduce((sum, c) => sum + getCardNumericValue(c), 0);
-
-            if (getCardNumericValue(card) + targetedHouse.value + extraSum !== houseValue) {
-              socket.emit('error-message', { message: `Played card, house value, and extra cards must sum to ${houseValue}` });
+            if (!canPartitionIntoValue([...targetedHouse.cards, card, ...extraTargetCards], houseValue)) {
+              socket.emit('error-message', { message: `Cannot distort: final house cards cannot be grouped into layers of value ${houseValue}` });
               await client.query('ROLLBACK');
               return;
             }
@@ -1755,10 +1824,8 @@ io.on('connection', (socket: Socket) => {
             }
 
             const extraTargetCards = (targetCards || []).filter(tc => !targetedHouse.cards.some(hc => hc.id === tc.id));
-            const extraSum = extraTargetCards.reduce((sum, c) => sum + getCardNumericValue(c), 0);
-
-            if (getCardNumericValue(card) + extraSum !== houseValue && getCardNumericValue(card) !== houseValue) {
-              socket.emit('error-message', { message: 'Contribution must equal the house value' });
+            if (!canPartitionIntoValue([card, ...extraTargetCards], houseValue)) {
+              socket.emit('error-message', { message: `Cannot contribute: new cards cannot be grouped into layers of value ${houseValue}` });
               await client.query('ROLLBACK');
               return;
             }
