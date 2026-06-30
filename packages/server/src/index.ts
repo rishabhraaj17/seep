@@ -501,7 +501,8 @@ async function checkAndTriggerBotTurn(lobbyCode: string) {
             visibleHand,
             currentLobby.gameState.floor,
             currentLobby.gameState,
-            currentPlayer.team as 1 | 2
+            currentPlayer.team as 1 | 2,
+            currentLobby.players
           );
           playAction = botMove.action;
           selectedCard = botMove.card;
