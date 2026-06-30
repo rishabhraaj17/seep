@@ -64,19 +64,24 @@ export default function GameScreen({
   const [lobbyCode, setLobbyCode] = useState(initialLobbyCode);
   const [hand, setHand] = useState<Card[]>([]);
   const [isBidding, setIsBidding] = useState(true);
-  const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' | 'info' } | null>(null);
+  const [notifications, setNotifications] = useState<{ id: number; msg: string; type: 'success' | 'error' | 'info' | 'move' | 'seep'; card?: Card }[]>([]);
+  const notifId = useRef(0);
   const [showProfile, setShowProfile] = useState(false);
   const [showGuide, setShowGuide] = useState(false); // Rules hidden by default
-  const [moveBanner, setMoveBanner] = useState<{ msg: string; card?: Card } | null>(null);
 
   const playersRef = useRef(gameState?.players);
   useEffect(() => {
     playersRef.current = gameState?.players;
   }, [gameState?.players]);
 
+  const addNotification = (msg: string, type: 'success' | 'error' | 'info' | 'move' | 'seep' = 'info', duration = 3500, card?: Card) => {
+    const id = ++notifId.current;
+    setNotifications(prev => [...prev.slice(-4), { id, msg, type, card }]);
+    setTimeout(() => setNotifications(prev => prev.filter(n => n.id !== id)), duration);
+  };
+
   const showToast = (msg: string, type: 'success' | 'error' | 'info' = 'info', duration = 3000) => {
-    setToast({ msg, type });
-    setTimeout(() => setToast(null), duration);
+    addNotification(msg, type, duration);
   };
 
   useEffect(() => {
@@ -124,36 +129,35 @@ export default function GameScreen({
 
     socket.on('seep-executed', ({ playerId }: { playerId: string }) => {
       const seepName = playerId === userId ? 'You' : (playersRef.current?.find(p => p.id === playerId)?.username || playerId);
-      showToast(`🌊 SEEP executed by ${seepName}! +50 points!`, 'success', 4000);
+      addNotification(`🌊 SEEP by ${seepName}! +50 pts!`, 'seep', 5000);
     });
 
     socket.on('toast-message', ({ message }: { message: string }) => {
-      showToast(message, 'info', 4000);
+      addNotification(message, 'info', 4000);
     });
 
     socket.on('move-executed', ({ playerId: pid, username: name, action, card, targetCards: targets, houseValue: hVal }) => {
       let msg = '';
-      const cardStr = `[${card.rank}${suitSymbol(card.suit)}]`;
+      const cardStr = `${card.rank}${suitSymbol(card.suit)}`;
       const displayName = pid === userId ? 'You' : name;
       
       if (action === 'BID') {
-        msg = `📢 ${displayName} bid ${hVal} using ${cardStr}`;
+        msg = `📢 ${displayName} bid ${hVal} using [${cardStr}]`;
       } else if (action === 'THROW') {
-        msg = `📤 ${displayName} threw ${cardStr} in the open`;
+        msg = `📤 ${displayName} threw [${cardStr}]`;
       } else if (action === 'CAPTURE') {
         const tStr = targets.map((c: Card) => `${c.rank}${suitSymbol(c.suit)}`).join(', ');
-        msg = `✨ ${displayName} captured [${tStr}] with ${cardStr}`;
+        msg = `✨ ${displayName} captured [${tStr}] with [${cardStr}]`;
       } else if (action === 'BUILD_HOUSE') {
         const tStr = targets.map((c: Card) => `${c.rank}${suitSymbol(c.suit)}`).join(', ');
-        msg = `🏠 ${displayName} built a house of ${hVal} with ${cardStr} and [${tStr}]`;
+        msg = `🏠 ${displayName} built house-${hVal} with [${cardStr}]+[${tStr}]`;
       }
       
-      setMoveBanner({ msg, card });
-      setTimeout(() => setMoveBanner(null), 3000);
+      addNotification(msg, 'move', 3500, card);
     });
 
     socket.on('error-message', (data: { message: string }) => {
-      showToast(data.message, 'error');
+      addNotification(data.message, 'error', 4000);
     });
 
     return () => {
@@ -402,10 +406,12 @@ export default function GameScreen({
     id: `opp-r-${i}`, suit: 'spades' as const, rank: '2' as const, pointValue: 0, faceDown: true
   }));
 
-  const toastColors = {
-    success: { bg: 'rgba(22,160,133,0.25)', border: 'rgba(22,160,133,0.5)', color: '#1abc9c' },
-    error:   { bg: 'rgba(139,26,26,0.3)',   border: 'rgba(192,57,43,0.5)',  color: '#f1948a' },
-    info:    { bg: 'rgba(22,48,32,0.6)',     border: 'rgba(212,175,55,0.3)', color: '#d4af37' },
+  const notifColors: Record<string, { bg: string; border: string; color: string }> = {
+    success: { bg: 'rgba(22,160,133,0.2)',  border: 'rgba(22,160,133,0.5)',  color: '#1abc9c' },
+    error:   { bg: 'rgba(139,26,26,0.35)',  border: 'rgba(192,57,43,0.55)',  color: '#f1948a' },
+    info:    { bg: 'rgba(22,48,32,0.7)',    border: 'rgba(212,175,55,0.35)', color: '#d4af37' },
+    move:    { bg: 'rgba(9,18,11,0.9)',     border: 'rgba(212,175,55,0.4)',  color: '#f5d78e' },
+    seep:    { bg: 'rgba(15,40,80,0.85)',   border: 'rgba(100,160,255,0.6)', color: '#7ec8ff' },
   };
 
   return (
@@ -461,30 +467,25 @@ export default function GameScreen({
         )}
       </AnimatePresence>
 
-      {/* Move Announcement Banner */}
-      <AnimatePresence>
-        {moveBanner && (
-          <motion.div
-            initial={{ y: -50, opacity: 0 }}
-            animate={{ y: 0, opacity: 1 }}
-            exit={{ y: -50, opacity: 0 }}
-            className="absolute top-16 left-1/2 -translate-x-1/2 z-40 px-6 py-2.5 rounded-full shadow-lg border text-xs sm:text-sm font-semibold tracking-wide flex items-center gap-3 backdrop-blur-md"
-            style={{
-              background: 'rgba(9, 18, 11, 0.95)',
-              borderColor: 'rgba(212,175,55,0.4)',
-              boxShadow: '0 8px 32px rgba(0,0,0,0.6)',
-              color: '#f5d78e'
-            }}
-          >
-            <span>{moveBanner.msg}</span>
-            {moveBanner.card && (
-              <span className="scale-75 origin-center inline-block -my-2">
-                <PlayingCard card={moveBanner.card} size="sm" />
-              </span>
-            )}
-          </motion.div>
-        )}
-      </AnimatePresence>
+      {/* Stacked notification feed — top-center, no overlap */}
+      <div className="absolute top-14 left-1/2 -translate-x-1/2 z-50 flex flex-col gap-1.5 items-center pointer-events-none" style={{ minWidth: '240px', maxWidth: '90vw' }}>
+        <AnimatePresence mode="popLayout">
+          {notifications.map(n => (
+            <motion.div
+              key={n.id}
+              layout
+              initial={{ y: -24, opacity: 0, scale: 0.92 }}
+              animate={{ y: 0, opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.88 }}
+              transition={{ type: 'spring', stiffness: 380, damping: 28 }}
+              className="px-4 py-2 rounded-xl text-xs font-semibold tracking-wide shadow-xl border backdrop-blur-md flex items-center gap-2 text-center w-full"
+              style={notifColors[n.type] || notifColors.info}
+            >
+              <span className="flex-1">{n.msg}</span>
+            </motion.div>
+          ))}
+        </AnimatePresence>
+      </div>
 
       {/* Dynamic Rules Guide Panel */}
       <div className="absolute top-16 right-4 z-40 hidden lg:block">
@@ -541,24 +542,14 @@ export default function GameScreen({
         {/* Table oval decoration */}
         <div className="absolute inset-[5%] sm:inset-[8%] rounded-[50%] table-oval pointer-events-none" />
 
-        {/* Toast notifications */}
-        <AnimatePresence>
-          {toast && (
-            <motion.div
-              initial={{ y: -30, opacity: 0 }}
-              animate={{ y: 0, opacity: 1 }}
-              exit={{ y: -30, opacity: 0 }}
-              className="absolute top-6 px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold tracking-wide shadow-2xl border flex items-center gap-2 z-50 text-center"
-              style={toastColors[toast.type]}
-            >
-              <span>{toast.msg}</span>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
         {/* TOP — Partner across (in front) */}
         <div className="absolute top-4 sm:top-6 left-0 right-0 flex justify-center">
-          <PlayerHand cards={partnerHandCards} position="top" isOpponent label={partnerUsername} />
+          <PlayerHand
+            cards={partnerHandCards}
+            position="top"
+            isOpponent
+            label={`${partnerUsername} 🤝 Partner`}
+          />
         </div>
 
         {/* LEFT — Opponent (left side) */}

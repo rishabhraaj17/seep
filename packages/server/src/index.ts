@@ -534,7 +534,33 @@ async function checkAndTriggerBotTurn(lobbyCode: string) {
           const bidVal = rankToValue[bidCard.rank];
           currentLobby.gameState.bid = { playerId: bidder.id, value: bidVal, fulfilled: false };
           currentLobby.gameState.gamePhase = 'playing';
-          
+
+          // Distribute remaining deck cards to players 0, 1, 2 (8 each)
+          const remaining = currentLobby.gameState.deck || [];
+          if (remaining.length >= 24) {
+            const h0 = currentLobby.hands?.get(currentLobby.players[0].id) || [];
+            const h1 = currentLobby.hands?.get(currentLobby.players[1].id) || [];
+            const h2 = currentLobby.hands?.get(currentLobby.players[2].id) || [];
+            currentLobby.hands?.set(currentLobby.players[0].id, [...h0, ...remaining.slice(0, 8)]);
+            currentLobby.hands?.set(currentLobby.players[1].id, [...h1, ...remaining.slice(8, 16)]);
+            currentLobby.hands?.set(currentLobby.players[2].id, [...h2, ...remaining.slice(16, 24)]);
+            currentLobby.gameState.deck = [];
+
+            // Privately send updated hands to human players
+            currentLobby.players.forEach((p, idx) => {
+              if (idx < 3 && !p.id.startsWith('Bot_')) {
+                const fullHand = currentLobby.hands?.get(p.id) || [];
+                io.to(p.socketId).emit('deal-cards', {
+                  lobbyCode: currentLobby.code,
+                  floor: currentLobby.gameState!.floor,
+                  hand: fullHand,
+                  playerIndex: idx,
+                  biddingPlayerIndex: 0,
+                });
+              }
+            });
+          }
+
           await saveLobby(currentLobby);
 
           io.to(currentLobby.code).emit('bid-placed', { bid: bidVal, playerId: bidder.id });
