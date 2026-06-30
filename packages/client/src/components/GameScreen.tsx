@@ -326,19 +326,19 @@ export default function GameScreen({
 
       {/* Game layout */}
       <div className="relative w-full h-full flex flex-col items-center">
-        {/* TOP — Opponent across */}
+        {/* TOP — Partner across (in front) */}
         <div className="absolute top-4 sm:top-6 left-0 right-0 flex justify-center">
-          <PlayerHand cards={opponentCards} position="top" isOpponent label="Opponent" />
+          <PlayerHand cards={opponentCards} position="top" isOpponent label="Partner" />
         </div>
 
-        {/* LEFT — Partner (left side) */}
+        {/* LEFT — Opponent (left side) */}
         <div className="absolute left-3 sm:left-6 top-1/2 -translate-y-1/2">
-          <PlayerHand cards={opponentCards.slice(0, 3)} position="left" isOpponent label="Partner" />
+          <PlayerHand cards={opponentCards.slice(0, 3)} position="left" isOpponent label="Opponent (L)" />
         </div>
 
         {/* RIGHT — Opponent (right side) */}
         <div className="absolute right-3 sm:right-6 top-1/2 -translate-y-1/2">
-          <PlayerHand cards={opponentCards.slice(0, 3)} position="right" isOpponent label="Opp." />
+          <PlayerHand cards={opponentCards.slice(0, 3)} position="right" isOpponent label="Opponent (R)" />
         </div>
 
         {/* CENTER — Floor cards */}
