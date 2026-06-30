@@ -170,6 +170,63 @@ export default function GameScreen({
     };
   }, [socket, userId]); // gameState removed to prevent infinite listener re-binding / flickering!
 
+  const executeHouseAction = (playedCard: Card, targetHouse: House, floorCards: Card[]) => {
+    if (!lobbyCode) return;
+    const playedVal = getCardValue(playedCard);
+    
+    // Filter floorCards to make sure we don't duplicate any cards already in the house
+    const cleanFloorCards = floorCards.filter(fc => !targetHouse.cards.some(hc => hc.id === fc.id));
+    const floorSum = cleanFloorCards.reduce((sum, c) => sum + getCardValue(c), 0);
+
+    // 1. Stacking / Contribution (value remains targetHouse.value)
+    if (playedVal + floorSum === targetHouse.value) {
+      socket.emit('game-action', {
+        lobbyCode,
+        action: 'BUILD_HOUSE',
+        payload: {
+          card: playedCard,
+          targetCards: [...targetHouse.cards, ...cleanFloorCards],
+          houseValue: targetHouse.value
+        }
+      });
+      setHand(prev => prev.filter(c => c.id !== playedCard.id));
+      setSelectedCard(null); setCapturedCards([]);
+      return;
+    }
+
+    // 2. Direct Capture (if no floor cards selected and values match)
+    if (playedVal === targetHouse.value && cleanFloorCards.length === 0) {
+      socket.emit('game-action', {
+        lobbyCode,
+        action: 'CAPTURE',
+        payload: { card: playedCard, targetCards: targetHouse.cards }
+      });
+      setHand(prev => prev.filter(c => c.id !== playedCard.id));
+      setSelectedCard(null); setCapturedCards([]);
+      return;
+    }
+
+    // 3. Distortion (changing house value)
+    const newDistortedValue = playedVal + targetHouse.value + floorSum;
+    if (newDistortedValue <= 13) {
+      socket.emit('game-action', {
+        lobbyCode,
+        action: 'BUILD_HOUSE',
+        payload: {
+          card: playedCard,
+          targetCards: [...targetHouse.cards, ...cleanFloorCards],
+          houseValue: newDistortedValue
+        }
+      });
+      setHand(prev => prev.filter(c => c.id !== playedCard.id));
+      setSelectedCard(null); setCapturedCards([]);
+      return;
+    }
+
+    // If none match, show an error
+    showToast("Invalid move for this house", "error");
+  };
+
   // Drag and Drop handlers — cap house sum at 13
   const handleDragStart = (e: React.DragEvent, card: Card) => {
     e.dataTransfer.setData('cardId', card.id);
@@ -205,31 +262,7 @@ export default function GameScreen({
     const playedCard = hand.find(c => c.id === cardId);
     if (!playedCard || !lobbyCode) return;
 
-    const playedVal = getCardValue(playedCard);
-
-    if (playedVal === targetHouse.value) {
-      socket.emit('game-action', { 
-        lobbyCode, 
-        action: 'CAPTURE', 
-        payload: { card: playedCard, targetCards: targetHouse.cards } 
-      });
-      setHand(prev => prev.filter(c => c.id !== playedCard.id));
-    } else if (playedVal + targetHouse.value <= 14) {
-      const sum = playedVal + targetHouse.value;
-      socket.emit('game-action', { 
-        lobbyCode, 
-        action: 'BUILD_HOUSE', 
-        payload: { card: playedCard, targetCards: targetHouse.cards, houseValue: sum } 
-      });
-      setHand(prev => prev.filter(c => c.id !== playedCard.id));
-    } else {
-      socket.emit('game-action', { 
-        lobbyCode, 
-        action: 'THROW', 
-        payload: { card: playedCard, targetCards: [] } 
-      });
-      setHand(prev => prev.filter(c => c.id !== playedCard.id));
-    }
+    executeHouseAction(playedCard, targetHouse, capturedCards);
   };
 
   const handleDropOnBoard = (e: React.DragEvent) => {
@@ -247,33 +280,27 @@ export default function GameScreen({
   };
 
   const handleCardClick = (card: Card) => {
-    setSelectedCard(card);
-    setHouseValue(null);
-    setCapturedCards(findCapturableCards(card, gameState?.floor || []));
+    const isFromHand = hand.some(c => c.id === card.id);
+    if (isFromHand) {
+      setSelectedCard(card);
+      setHouseValue(null);
+      setCapturedCards(findCapturableCards(card, gameState?.floor || []));
+    } else {
+      if (selectedCard) {
+        setCapturedCards(prev => {
+          if (prev.some(c => c.id === card.id)) {
+            return prev.filter(c => c.id !== card.id);
+          } else {
+            return [...prev, card];
+          }
+        });
+      }
+    }
   };
 
   const handleHouseClick = (house: House) => {
     if (!selectedCard || !lobbyCode) return;
-    
-    const playedVal = getCardValue(selectedCard);
-    
-    if (playedVal === house.value) {
-      socket.emit('game-action', {
-        lobbyCode,
-        action: 'CAPTURE',
-        payload: { card: selectedCard, targetCards: house.cards }
-      });
-      setHand(prev => prev.filter(c => c.id !== selectedCard.id));
-      setSelectedCard(null); setCapturedCards([]);
-    } else if (playedVal + house.value <= 14) {
-      socket.emit('game-action', {
-        lobbyCode,
-        action: 'BUILD_HOUSE',
-        payload: { card: selectedCard, targetCards: house.cards, houseValue: playedVal + house.value }
-      });
-      setHand(prev => prev.filter(c => c.id !== selectedCard.id));
-      setSelectedCard(null); setCapturedCards([]);
-    }
+    executeHouseAction(selectedCard, house, capturedCards);
   };
 
   const handleCapture = () => {
@@ -566,6 +593,7 @@ export default function GameScreen({
               highlightedIds={capturedCards.map(c => c.id)}
               onCardClick={handleCardClick}
               onDropOnCard={handleDropOnCard}
+              hideEmptyMessage={!!(gameState?.houses && gameState.houses.length > 0)}
             />
           </div>
 
