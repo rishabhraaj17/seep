@@ -929,6 +929,14 @@ io.on('connection', (socket: Socket) => {
         const winnerIndex = lobby.players.findIndex(p => p.id === tossWinnerId);
         if (winnerIndex !== -1) {
           const rotatedPlayers = [...lobby.players.slice(winnerIndex), ...lobby.players.slice(0, winnerIndex)];
+          // Temporarily shift seats to offset 10 to avoid unique key constraint violation
+          for (let i = 0; i < rotatedPlayers.length; i++) {
+            await client.query(
+              'UPDATE lobby_players SET seat = $1 WHERE lobby_code = $2 AND user_id = $3',
+              [i + 10, lobbyCode, rotatedPlayers[i].id]
+            );
+          }
+          // Shift back to final rotated seats (1 to 4)
           for (let i = 0; i < rotatedPlayers.length; i++) {
             await client.query(
               'UPDATE lobby_players SET seat = $1, team = $2 WHERE lobby_code = $3 AND user_id = $4',
