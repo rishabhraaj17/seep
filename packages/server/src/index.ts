@@ -448,7 +448,74 @@ async function checkRoundEnd(lobby: LobbyState) {
 async function checkAndTriggerBotTurn(lobbyCode: string) {
   // Load lobby from database
   const lobby = await loadLobby(lobbyCode);
-  if (!lobby || !lobby.gameState) return;
+  if (!lobby || !lobby.gameState || !lobby.hands) return;
+
+  // Check if the game is waiting for dealer verification from a Bot Caller!
+  if (lobby.gameState.askAbove8) {
+    const callerPlayer = lobby.players[0];
+    if (callerPlayer && callerPlayer.id.startsWith('Bot_')) {
+      setTimeout(async () => {
+        const client = await pool.connect();
+        try {
+          await client.query('BEGIN');
+          const currentLobby = await loadLobby(lobbyCode, client);
+          if (!currentLobby || !currentLobby.gameState || !currentLobby.hands || !currentLobby.gameState.askAbove8) {
+            await client.query('ROLLBACK');
+            return;
+          }
+
+          const hand = currentLobby.hands.get(callerPlayer.id) || [];
+          const hasAbove8 = hand.slice(0, 4).some(c => getCardNumericValue(c) > 8);
+          
+          if (!hasAbove8) {
+            let currentDeck = currentLobby.gameState.deck || [];
+            if (currentDeck.length < 4) {
+              currentDeck = shuffle(createDeck());
+            }
+
+            const old4 = hand.slice(0, 4);
+            const new4 = currentDeck.slice(0, 4);
+            const remainingDeck = shuffle([...currentDeck.slice(4), ...old4]);
+            const updatedHand = [...new4, ...hand.slice(4)];
+            
+            currentLobby.hands.set(callerPlayer.id, updatedHand);
+            currentLobby.gameState.deck = remainingDeck;
+
+            const newHasAbove8 = new4.some(c => getCardNumericValue(c) > 8);
+            if (!newHasAbove8) {
+              currentLobby.gameState.askAbove8 = true;
+              io.to(lobbyCode).emit('toast-message', { 
+                message: `🤖 Bot Caller (${callerPlayer.id}) had no cards above 8. Dealer dealt 4 new cards.` 
+              });
+            } else {
+              currentLobby.gameState.askAbove8 = false;
+              io.to(lobbyCode).emit('toast-message', { 
+                message: `🤖 Dealer verified Bot Caller (${callerPlayer.id}) now has a card above 8.` 
+              });
+            }
+
+            await saveLobby(currentLobby, client);
+            await client.query('COMMIT');
+            
+            io.to(lobbyCode).emit('game-state', currentLobby.gameState);
+            await checkAndTriggerBotTurn(lobbyCode);
+          } else {
+            currentLobby.gameState.askAbove8 = false;
+            await saveLobby(currentLobby, client);
+            await client.query('COMMIT');
+            io.to(lobbyCode).emit('game-state', currentLobby.gameState);
+            await checkAndTriggerBotTurn(lobbyCode);
+          }
+        } catch (err) {
+          await client.query('ROLLBACK');
+          console.error('Error in bot respond-above-8:', err);
+        } finally {
+          client.release();
+        }
+      }, 1000);
+      return;
+    }
+  }
 
   if (lobby.gameState.gamePhase === 'bidding') {
     const bidder = lobby.players[0];
