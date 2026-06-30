@@ -47,12 +47,14 @@ export interface GameState {
   firstTurnCompleted: string[];
   tossWinner?: string;
   tossHistory?: { playerId: string; card: Card }[];
+  handSizes: Record<string, number>;
+  players: { id: string; username: string; team: number; seat: number; }[];
 }
 
 interface LobbyState {
   code: string;
   isPrivate: boolean;
-  players: { id: string; socketId: string; team: number }[];
+  players: { id: string; socketId: string; team: number; seat?: number; username?: string; }[];
   status: 'waiting' | 'bidding' | 'playing' | 'ended';
   gameState?: GameState;
   hands?: Map<string, Card[]>;
@@ -173,13 +175,19 @@ async function loadLobby(code: string, client?: any): Promise<LobbyState | null>
   const lobbyRow = lobbyRes.rows[0];
 
   const playersRes = await db.query(
-    'SELECT user_id, socket_id, team FROM lobby_players WHERE lobby_code = $1 ORDER BY seat ASC',
+    `SELECT lp.user_id, lp.socket_id, lp.team, lp.seat, u.username 
+     FROM lobby_players lp 
+     LEFT JOIN users u ON lp.user_id = u.id 
+     WHERE lp.lobby_code = $1 
+     ORDER BY lp.seat ASC`,
     [code]
   );
   const players = playersRes.rows.map((r: any) => ({
     id: r.user_id,
     socketId: r.socket_id,
     team: r.team,
+    seat: r.seat,
+    username: r.user_id.startsWith('Bot_') ? r.user_id : (r.username || 'Player'),
   }));
 
   const lobby: LobbyState = {
@@ -190,7 +198,7 @@ async function loadLobby(code: string, client?: any): Promise<LobbyState | null>
   };
 
   const gsRes = await db.query(
-    'SELECT floor, houses, hands, current_player_index, round_number, team_scores, captured_cards, team_seeps, game_phase, bid, last_capture_team, first_turn_completed, toss_winner, toss_history FROM game_states WHERE lobby_code = $1',
+    'SELECT floor, houses, hands, current_player_index, round_number, team_scores, captured_cards, team_seeps, game_phase, bid, last_capture_team, first_turn_completed, toss_winner, toss_history, hand_sizes FROM game_states WHERE lobby_code = $1',
     [code]
   );
 
@@ -211,6 +219,13 @@ async function loadLobby(code: string, client?: any): Promise<LobbyState | null>
       firstTurnCompleted: gsRow.first_turn_completed || [],
       tossWinner: gsRow.toss_winner || undefined,
       tossHistory: gsRow.toss_history || [],
+      handSizes: gsRow.hand_sizes || {},
+      players: players.map((p: any) => ({
+        id: p.id,
+        username: p.username,
+        team: p.team,
+        seat: p.seat,
+      })),
     };
     const hands = new Map<string, Card[]>();
     if (gsRow.hands) {
@@ -240,18 +255,21 @@ async function saveLobby(lobby: LobbyState, client?: any): Promise<void> {
 
     if (lobby.gameState) {
       const handsObj: Record<string, Card[]> = {};
+      const handSizes: Record<string, number> = {};
       if (lobby.hands) {
         for (const [uid, cards] of lobby.hands.entries()) {
           handsObj[uid] = cards;
+          handSizes[uid] = cards.length;
         }
       }
+      lobby.gameState.handSizes = handSizes;
 
       await db.query(
         `INSERT INTO game_states (
           lobby_code, floor, houses, hands, current_player_index, round_number, 
           team_scores, captured_cards, team_seeps, game_phase, bid, last_capture_team, first_turn_completed,
-          toss_winner, toss_history
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+          toss_winner, toss_history, hand_sizes
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
          ON CONFLICT (lobby_code) DO UPDATE SET
           floor = EXCLUDED.floor,
           houses = EXCLUDED.houses,
@@ -267,6 +285,7 @@ async function saveLobby(lobby: LobbyState, client?: any): Promise<void> {
           first_turn_completed = EXCLUDED.first_turn_completed,
           toss_winner = EXCLUDED.toss_winner,
           toss_history = EXCLUDED.toss_history,
+          hand_sizes = EXCLUDED.hand_sizes,
           updated_at = CURRENT_TIMESTAMP`,
         [
           lobby.code,
@@ -284,6 +303,7 @@ async function saveLobby(lobby: LobbyState, client?: any): Promise<void> {
           JSON.stringify(lobby.gameState.firstTurnCompleted || []),
           lobby.gameState.tossWinner || null,
           JSON.stringify(lobby.gameState.tossHistory || []),
+          JSON.stringify(handSizes),
         ]
       );
     }
@@ -384,10 +404,10 @@ async function checkRoundEnd(lobby: LobbyState) {
           deckIndex += 12;
         }
 
-        // Caller (player 0) constraint check
-        const hasCardGe9 = hands[0].some(c => {
-          const val = rankToValue[c.rank];
-          return val >= 9 && val <= 14;
+        // Caller (player 0) constraint check on first 4 cards
+        const hasCardGe9 = hands[0].slice(0, 4).some(c => {
+          const val = getCardNumericValue(c);
+          return val >= 9 && val <= 13;
         });
         if (hasCardGe9) {
           redeal = false;
@@ -407,7 +427,7 @@ async function checkRoundEnd(lobby: LobbyState) {
 
       // Broadcast new deal cards privately to all
       lobby.players.forEach((p, i) => {
-        const visibleHand = (i === 0) ? hands[i] : hands[i].slice(0, 4);
+        const visibleHand = (i === 3) ? hands[i] : hands[i].slice(0, 4);
         io.to(p.socketId).emit('deal-cards', {
           lobbyCode: lobby.code,
           floor: floorCards,
@@ -572,7 +592,17 @@ async function checkAndTriggerBotTurn(lobbyCode: string) {
 
         currentLobby.gameState.currentPlayerIndex = (currentLobby.gameState.currentPlayerIndex + 1) % 4;
 
+        await logMove(pool, lobbyCode, currentPlayer.id, playAction, selectedCard, targetCards, houseValue);
         await saveLobby(currentLobby);
+
+        io.to(currentLobby.code).emit('move-executed', {
+          playerId: currentPlayer.id,
+          username: currentPlayer.id,
+          action: playAction,
+          card: selectedCard,
+          targetCards,
+          houseValue,
+        });
 
         io.to(currentLobby.code).emit('game-state', currentLobby.gameState);
         io.to(currentLobby.code).emit('game-updated', {
@@ -664,6 +694,33 @@ async function proceedToBidding(lobbyCode: string) {
     console.error('Error proceeding to bidding:', err);
   } finally {
     client.release();
+  }
+}
+
+async function logMove(
+  client: any,
+  lobbyCode: string,
+  playerId: string,
+  actionType: string,
+  cardPlayed: Card,
+  targetCards: Card[],
+  houseValue?: number
+) {
+  try {
+    await client.query(
+      `INSERT INTO game_moves (lobby_code, player_id, action_type, card_played, target_cards, house_value)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [
+        lobbyCode,
+        playerId,
+        actionType,
+        JSON.stringify(cardPlayed),
+        JSON.stringify(targetCards),
+        houseValue || null,
+      ]
+    );
+  } catch (err) {
+    console.error('Error logging move to DB:', err);
   }
 }
 
@@ -1000,6 +1057,13 @@ io.on('connection', (socket: Socket) => {
           firstTurnCompleted: [],
           tossWinner: tossWinnerId,
           tossHistory,
+          handSizes: {},
+          players: lobby.players.map(p => ({
+            id: p.id,
+            username: p.username || p.id,
+            team: p.team,
+            seat: p.seat || 1,
+          })),
         };
 
         await saveLobby(lobby, client);
@@ -1067,11 +1131,30 @@ io.on('connection', (socket: Socket) => {
       lobby.gameState.bid = { playerId, value: bid, fulfilled: false };
       lobby.gameState.gamePhase = 'playing';
 
+      const bidCard = hand.find(c => c.id === cardId)!;
+      await logMove(client, lobbyCode, playerId, 'BID', bidCard, [], bid);
+
       await saveLobby(lobby, client);
       await client.query('COMMIT');
 
       io.to(lobbyCode).emit('bid-placed', { bid, playerId });
       io.to(lobbyCode).emit('game-state', lobby.gameState);
+
+      let username = playerId;
+      if (!playerId.startsWith('Bot_')) {
+        const userRes = await client.query('SELECT username FROM users WHERE id = $1', [playerId]);
+        if (userRes.rows.length > 0) {
+          username = userRes.rows[0].username;
+        }
+      }
+      io.to(lobbyCode).emit('move-executed', {
+        playerId,
+        username,
+        action: 'BID',
+        card: bidCard,
+        targetCards: [],
+        houseValue: bid,
+      });
 
       if (!biddingPlayer.id.startsWith('Bot_')) {
         io.to(socket.id).emit('deal-cards', {
@@ -1112,7 +1195,9 @@ io.on('connection', (socket: Socket) => {
       }
 
       const { action, payload } = data;
+      let actionType = action;
       const { card, targetCards } = payload;
+      const houseValue = payload?.houseValue;
 
       // Enforce turn order
       const currentPlayer = lobby.players[lobby.gameState.currentPlayerIndex];
@@ -1139,19 +1224,19 @@ io.on('connection', (socket: Socket) => {
       if (isCallerFirstTurn) {
         const bidVal = lobby.gameState.bid?.value;
         if (bidVal !== undefined) {
-          if (action === 'THROW') {
+          if (actionType === 'THROW') {
             if (getCardNumericValue(card) !== bidVal) {
               socket.emit('error-message', { message: `If you throw on your first turn, it must be the called card value (${bidVal})` });
               await client.query('ROLLBACK');
               return;
             }
-          } else if (action === 'CAPTURE') {
+          } else if (actionType === 'CAPTURE') {
             if (getCardNumericValue(card) !== bidVal) {
               socket.emit('error-message', { message: `Your first capture must be with a card of the bid value (${bidVal})` });
               await client.query('ROLLBACK');
               return;
             }
-          } else if (action === 'BUILD_HOUSE') {
+          } else if (actionType === 'BUILD_HOUSE') {
             const buildVal = payload.houseValue;
             if (buildVal !== bidVal) {
               socket.emit('error-message', { message: `Your first house build must be of the bid value (${bidVal})` });
@@ -1162,7 +1247,7 @@ io.on('connection', (socket: Socket) => {
         }
       }
 
-      if (action === 'CAPTURE') {
+      if (actionType === 'CAPTURE') {
         const cardValue = getCardNumericValue(card);
 
         // Find if there is any house of this value
@@ -1226,7 +1311,7 @@ io.on('connection', (socket: Socket) => {
 
         lobby.gameState.currentPlayerIndex = (lobby.gameState.currentPlayerIndex + 1) % 4;
         io.to(lobbyCode).emit('game-state', lobby.gameState);
-      } else if (action === 'THROW') {
+      } else if (actionType === 'THROW') {
         lobby.gameState.floor.push(card);
 
         lobby.hands.set(playerId, hand.filter(c => c.id !== card.id));
@@ -1248,7 +1333,7 @@ io.on('connection', (socket: Socket) => {
 
         lobby.gameState.currentPlayerIndex = (lobby.gameState.currentPlayerIndex + 1) % 4;
         io.to(lobbyCode).emit('game-state', lobby.gameState);
-      } else if (action === 'BUILD_HOUSE') {
+      } else if (actionType === 'BUILD_HOUSE') {
         const houseValue = payload.houseValue as 9 | 10 | 11 | 12 | 13 | 14;
 
         if (!hand.some(c => getCardNumericValue(c) === houseValue)) {
@@ -1263,10 +1348,29 @@ io.on('connection', (socket: Socket) => {
 
         if (targetedHouseIndex === -1) {
           if (lobby.gameState.houses.length >= 2) {
-            socket.emit('error-message', { message: 'Maximum of 2 houses on the board exceeded' });
-            await client.query('ROLLBACK');
-            return;
-          }
+            actionType = 'THROW';
+            lobby.gameState.floor.push(card);
+
+            lobby.hands.set(playerId, hand.filter(c => c.id !== card.id));
+
+            if (!hasCompletedFirstTurn) {
+              lobby.gameState.firstTurnCompleted.push(playerId);
+              if (playerIndex !== 0) {
+                const updatedHand = lobby.hands.get(playerId) || [];
+                socket.emit('deal-cards', {
+                  lobbyCode,
+                  floor: lobby.gameState.floor,
+                  hand: updatedHand,
+                  playerIndex,
+                  biddingPlayerIndex: 0,
+                });
+              }
+            }
+
+            lobby.gameState.currentPlayerIndex = (lobby.gameState.currentPlayerIndex + 1) % 4;
+            io.to(lobbyCode).emit('game-state', lobby.gameState);
+
+          } else {
 
           const targetSum = (targetCards || []).reduce((sum, c) => sum + getCardNumericValue(c), 0);
           if (getCardNumericValue(card) + targetSum !== houseValue) {
@@ -1287,9 +1391,9 @@ io.on('connection', (socket: Socket) => {
             lobby.gameState!.floor = lobby.gameState!.floor.filter(fc => fc.id !== c.id);
           });
           lobby.gameState.houses.push(newHouse);
-
-        } else {
-          const targetedHouse = lobby.gameState.houses[targetedHouseIndex];
+        }
+      } else {
+        const targetedHouse = lobby.gameState.houses[targetedHouseIndex];
           const isDistortion = targetedHouse.value !== houseValue;
 
           if (isDistortion) {
@@ -1381,8 +1485,25 @@ io.on('connection', (socket: Socket) => {
         io.to(lobbyCode).emit('game-state', lobby.gameState);
       }
 
+      await logMove(client, lobbyCode, playerId, action, card, targetCards, houseValue);
       await saveLobby(lobby, client);
       await client.query('COMMIT');
+
+      let username = playerId;
+      if (!playerId.startsWith('Bot_')) {
+        const userRes = await client.query('SELECT username FROM users WHERE id = $1', [playerId]);
+        if (userRes.rows.length > 0) {
+          username = userRes.rows[0].username;
+        }
+      }
+      io.to(lobbyCode).emit('move-executed', {
+        playerId,
+        username,
+        action,
+        card,
+        targetCards,
+        houseValue,
+      });
 
       socket.to(lobbyCode).emit('game-updated', { ...data, playerId });
 

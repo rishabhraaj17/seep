@@ -1,12 +1,13 @@
 import { useState, useEffect } from 'react';
 import { Socket } from 'socket.io-client';
 import { motion, AnimatePresence } from 'motion/react';
-import type { Card, GameState } from '../types';
+import type { Card, GameState, House } from '../types';
 import PlayerHand from './PlayerHand';
 import FloorCards from './FloorCards';
 import Scoreboard from './Scoreboard';
 import BiddingPhase from './BiddingPhase';
 import TossPhase from './TossPhase';
+import PlayingCard from './PlayingCard';
 
 interface GameScreenProps {
   socket: Socket;
@@ -40,6 +41,13 @@ function findCapturableCards(card: Card, floor: Card[]): Card[] {
   return combo;
 }
 
+const suitSymbol = (suit: string) => {
+  if (suit === 'hearts') return '♥';
+  if (suit === 'diamonds') return '♦';
+  if (suit === 'clubs') return '♣';
+  return '♠';
+};
+
 export default function GameScreen({
   socket,
   userId,
@@ -56,10 +64,10 @@ export default function GameScreen({
   const [lobbyCode, setLobbyCode] = useState(initialLobbyCode);
   const [hand, setHand] = useState<Card[]>([]);
   const [isBidding, setIsBidding] = useState(true);
-  const [showScoreboard, setShowScoreboard] = useState(false);
   const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' | 'info' } | null>(null);
   const [showProfile, setShowProfile] = useState(false);
-  const [showGuide, setShowGuide] = useState(true);
+  const [showGuide, setShowGuide] = useState(false); // Rules hidden by default
+  const [moveBanner, setMoveBanner] = useState<{ msg: string; card?: Card } | null>(null);
 
   const showToast = (msg: string, type: 'success' | 'error' | 'info' = 'info', duration = 3000) => {
     setToast({ msg, type });
@@ -88,6 +96,8 @@ export default function GameScreen({
         teamScores: { team1: 0, team2: 0 }, capturedCards: { team1: [], team2: [] },
         seepCount: { team1: 0, team2: 0 }, gamePhase: 'bidding',
         firstTurnCompleted: [],
+        handSizes: {},
+        players: [],
       });
       setIsBidding(true);
     });
@@ -98,27 +108,162 @@ export default function GameScreen({
     });
 
     socket.on('bid-placed', ({ bid, playerId }: { bid: number; playerId: string }) => {
+      const bidderName = playerId === userId ? 'You' : (gameState?.players.find(p => p.id === playerId)?.username || playerId);
+      showToast(`📢 ${bidderName} placed a bid of ${bid}!`, 'success');
       setIsBidding(false);
-      showToast(playerId === userId ? `You bid ${bid}. Game on!` : `Bid of ${bid} placed. Game on!`, 'success');
     });
 
     socket.on('seep-executed', ({ playerId }: { playerId: string }) => {
-      showToast(playerId === userId ? '🌊 SEEP! You cleared the floor! +50 pts!' : '🌊 Seep! Opponent cleared the floor!', 'success', 4000);
+      const seepName = playerId === userId ? 'You' : (gameState?.players.find(p => p.id === playerId)?.username || playerId);
+      showToast(`🌊 SEEP executed by ${seepName}! +50 points!`, 'success', 4000);
+    });
+
+    socket.on('move-executed', ({ playerId: pid, username: name, action, card, targetCards: targets, houseValue: hVal }) => {
+      let msg = '';
+      const cardStr = `[${card.rank}${suitSymbol(card.suit)}]`;
+      const displayName = pid === userId ? 'You' : name;
+      
+      if (action === 'BID') {
+        msg = `📢 ${displayName} bid ${hVal} using ${cardStr}`;
+      } else if (action === 'THROW') {
+        msg = `📤 ${displayName} threw ${cardStr} in the open`;
+      } else if (action === 'CAPTURE') {
+        const tStr = targets.map((c: Card) => `${c.rank}${suitSymbol(c.suit)}`).join(', ');
+        msg = `✨ ${displayName} captured [${tStr}] with ${cardStr}`;
+      } else if (action === 'BUILD_HOUSE') {
+        const tStr = targets.map((c: Card) => `${c.rank}${suitSymbol(c.suit)}`).join(', ');
+        msg = `🏠 ${displayName} built a house of ${hVal} with ${cardStr} and [${tStr}]`;
+      }
+      
+      setMoveBanner({ msg, card });
+      setTimeout(() => setMoveBanner(null), 3000);
     });
 
     socket.on('error-message', (data: { message: string }) => {
-      showToast(`⚠️ ${data.message}`, 'error');
+      showToast(data.message, 'error');
     });
 
     return () => {
-      ['game-started','deal-cards','game-state','bid-placed','seep-executed','error-message'].forEach(e => socket.off(e));
+      ['game-started', 'deal-cards', 'game-state', 'bid-placed', 'seep-executed', 'move-executed', 'error-message'].forEach(e => socket.off(e));
     };
-  }, [socket, userId]);
+  }, [socket, userId, gameState]);
+
+  // Drag and Drop handlers
+  const handleDragStart = (e: React.DragEvent, card: Card) => {
+    e.dataTransfer.setData('cardId', card.id);
+  };
+
+  const handleDropOnCard = (e: React.DragEvent, targetCard: Card) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const cardId = e.dataTransfer.getData('cardId');
+    const playedCard = hand.find(c => c.id === cardId);
+    if (!playedCard || !lobbyCode) return;
+
+    const playedVal = getCardValue(playedCard);
+    const targetVal = getCardValue(targetCard);
+    const sum = playedVal + targetVal;
+
+    if (playedVal === targetVal) {
+      socket.emit('game-action', { 
+        lobbyCode, 
+        action: 'CAPTURE', 
+        payload: { card: playedCard, targetCards: [targetCard] } 
+      });
+      setHand(prev => prev.filter(c => c.id !== playedCard.id));
+    } else if (sum >= 9 && sum <= 14) {
+      socket.emit('game-action', { 
+        lobbyCode, 
+        action: 'BUILD_HOUSE', 
+        payload: { card: playedCard, targetCards: [targetCard], houseValue: sum } 
+      });
+      setHand(prev => prev.filter(c => c.id !== playedCard.id));
+    } else {
+      socket.emit('game-action', { 
+        lobbyCode, 
+        action: 'THROW', 
+        payload: { card: playedCard, targetCards: [] } 
+      });
+      setHand(prev => prev.filter(c => c.id !== playedCard.id));
+    }
+  };
+
+  const handleDropOnHouse = (e: React.DragEvent, targetHouse: House) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const cardId = e.dataTransfer.getData('cardId');
+    const playedCard = hand.find(c => c.id === cardId);
+    if (!playedCard || !lobbyCode) return;
+
+    const playedVal = getCardValue(playedCard);
+
+    if (playedVal === targetHouse.value) {
+      socket.emit('game-action', { 
+        lobbyCode, 
+        action: 'CAPTURE', 
+        payload: { card: playedCard, targetCards: targetHouse.cards } 
+      });
+      setHand(prev => prev.filter(c => c.id !== playedCard.id));
+    } else if (playedVal + targetHouse.value <= 14) {
+      const sum = playedVal + targetHouse.value;
+      socket.emit('game-action', { 
+        lobbyCode, 
+        action: 'BUILD_HOUSE', 
+        payload: { card: playedCard, targetCards: targetHouse.cards, houseValue: sum } 
+      });
+      setHand(prev => prev.filter(c => c.id !== playedCard.id));
+    } else {
+      socket.emit('game-action', { 
+        lobbyCode, 
+        action: 'THROW', 
+        payload: { card: playedCard, targetCards: [] } 
+      });
+      setHand(prev => prev.filter(c => c.id !== playedCard.id));
+    }
+  };
+
+  const handleDropOnBoard = (e: React.DragEvent) => {
+    e.preventDefault();
+    const cardId = e.dataTransfer.getData('cardId');
+    const playedCard = hand.find(c => c.id === cardId);
+    if (!playedCard || !lobbyCode) return;
+
+    socket.emit('game-action', { 
+      lobbyCode, 
+      action: 'THROW', 
+      payload: { card: playedCard, targetCards: [] } 
+    });
+    setHand(prev => prev.filter(c => c.id !== playedCard.id));
+  };
 
   const handleCardClick = (card: Card) => {
     setSelectedCard(card);
     setHouseValue(null);
     setCapturedCards(findCapturableCards(card, gameState?.floor || []));
+  };
+
+  const handleHouseClick = (house: House) => {
+    if (!selectedCard || !lobbyCode) return;
+    
+    const playedVal = getCardValue(selectedCard);
+    
+    if (playedVal === house.value) {
+      socket.emit('game-action', {
+        lobbyCode,
+        action: 'CAPTURE',
+        payload: { card: selectedCard, targetCards: house.cards }
+      });
+      setHand(prev => prev.filter(c => c.id !== selectedCard.id));
+      setSelectedCard(null); setCapturedCards([]);
+    } else if (playedVal + house.value <= 14) {
+      socket.emit('game-action', {
+        lobbyCode,
+        action: 'BUILD_HOUSE',
+        payload: { card: selectedCard, targetCards: house.cards, houseValue: playedVal + house.value }
+      });
+      setHand(prev => prev.filter(c => c.id !== selectedCard.id));
+      setSelectedCard(null); setCapturedCards([]);
+    }
   };
 
   const handleCapture = () => {
@@ -156,8 +301,28 @@ export default function GameScreen({
     );
   }
 
-  const opponentCards = Array(4).fill(null).map((_, i) => ({
-    id: `opp-${i}`, suit: 'spades' as const, rank: '2' as const, pointValue: 0, faceDown: true
+  // Seating Mapping
+  const leftPlayer = gameState?.players.find(p => p.seat === 2);
+  const partnerPlayer = gameState?.players.find(p => p.seat === 3);
+  const rightPlayer = gameState?.players.find(p => p.seat === 4);
+
+  const leftHandSize = gameState?.handSizes[leftPlayer?.id || ''] || 4;
+  const partnerHandSize = gameState?.handSizes[partnerPlayer?.id || ''] || 4;
+  const rightHandSize = gameState?.handSizes[rightPlayer?.id || ''] || 4;
+
+  const leftUsername = leftPlayer?.username || 'Opponent (L)';
+  const partnerUsername = partnerPlayer?.username || 'Partner';
+  const rightUsername = rightPlayer?.username || 'Opponent (R)';
+
+  // Build card arrays representing opponent card backs
+  const leftHandCards = Array(leftHandSize).fill(null).map((_, i) => ({
+    id: `opp-l-${i}`, suit: 'spades' as const, rank: '2' as const, pointValue: 0, faceDown: true
+  }));
+  const partnerHandCards = Array(partnerHandSize).fill(null).map((_, i) => ({
+    id: `opp-t-${i}`, suit: 'spades' as const, rank: '2' as const, pointValue: 0, faceDown: true
+  }));
+  const rightHandCards = Array(rightHandSize).fill(null).map((_, i) => ({
+    id: `opp-r-${i}`, suit: 'spades' as const, rank: '2' as const, pointValue: 0, faceDown: true
   }));
 
   const toastColors = {
@@ -167,186 +332,228 @@ export default function GameScreen({
   };
 
   return (
-    <div className="relative w-full h-screen overflow-hidden felt-bg">
-      {/* Table oval decoration */}
-      <div className="absolute inset-[5%] sm:inset-[8%] rounded-[50%] table-oval pointer-events-none" />
+    <div className="relative w-full h-screen overflow-hidden felt-bg flex flex-col">
+      {/* Sleek horizontal Scoreboard header at the top */}
+      <Scoreboard
+        team1Score={gameState?.teamScores.team1}
+        team2Score={gameState?.teamScores.team2}
+        round={gameState?.roundNumber}
+        seepCount={gameState?.seepCount}
+      />
 
-      {/* Toast notifications */}
+      {/* Floating Menu Toggle Button */}
+      <div className="absolute top-16 left-4 z-40">
+        <button
+          onClick={() => setShowProfile(!showProfile)}
+          className="w-9 h-9 rounded-xl flex items-center justify-center transition-all bg-black/40 border border-emerald-800/40 hover:border-gold"
+        >
+          <span className="text-sm">👤</span>
+        </button>
+      </div>
+
+      {/* Profile/Menu overlay */}
       <AnimatePresence>
-        {toast && (
+        {showProfile && (
           <motion.div
-            initial={{ opacity: 0, y: -30, scale: 0.9 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: -10, scale: 0.9 }}
-            className="absolute top-4 left-1/2 -translate-x-1/2 z-50 px-5 py-3 rounded-xl text-sm font-semibold whitespace-nowrap pointer-events-none"
-            style={{
-              background: toastColors[toast.type].bg,
-              border: `1px solid ${toastColors[toast.type].border}`,
-              color: toastColors[toast.type].color,
-              backdropFilter: 'blur(10px)',
-              boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
-            }}
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.95 }}
+            className="absolute top-28 left-4 z-40 p-4 rounded-xl border w-60 text-left shadow-2xl"
+            style={{ background: 'rgba(9,18,11,0.95)', borderColor: 'rgba(212,175,55,0.25)' }}
           >
-            {toast.msg}
+            <div className="mb-2">
+              <h3 className="font-display font-bold text-gold-gradient text-sm">{username}</h3>
+              <p className="text-[10px] uppercase tracking-wider" style={{ color: 'rgba(245,240,232,0.4)' }}>
+                {role} • Team {(gameState?.players.find(p => p.id === userId)?.team) || 1}
+              </p>
+            </div>
+            <div className="divider-gold opacity-20 my-2" />
+            <button
+              onClick={onLeaveGame}
+              className="w-full text-left py-1.5 text-xs text-rose-400 hover:text-rose-300 font-semibold"
+            >
+              🚪 Leave Room
+            </button>
+            <button
+              onClick={onLogout}
+              className="w-full text-left py-1.5 text-xs text-emerald-100/50 hover:text-emerald-100/70"
+            >
+              🚪 Logout
+            </button>
           </motion.div>
         )}
       </AnimatePresence>
 
-      {/* User profile / Leave game buttons on top left */}
-      <div className="absolute top-3 left-3 z-30 flex items-center gap-2">
-        <button
-          onClick={onLeaveGame}
-          className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-black/40 border border-gold-500/25 hover:border-gold-500/50 text-white cursor-pointer"
-          style={{ minHeight: '36px' }}
-        >
-          ← Lobby
-        </button>
-
-        <div className="relative">
-          <button
-            onClick={() => setShowProfile(!showProfile)}
-            className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold bg-black/40 border border-gold-500/25 hover:border-gold-500/50 text-white cursor-pointer"
-            style={{ minHeight: '36px' }}
+      {/* Move Announcement Banner */}
+      <AnimatePresence>
+        {moveBanner && (
+          <motion.div
+            initial={{ y: -50, opacity: 0 }}
+            animate={{ y: 0, opacity: 1 }}
+            exit={{ y: -50, opacity: 0 }}
+            className="absolute top-16 left-1/2 -translate-x-1/2 z-40 px-6 py-2.5 rounded-full shadow-lg border text-xs sm:text-sm font-semibold tracking-wide flex items-center gap-3 backdrop-blur-md"
+            style={{
+              background: 'rgba(9, 18, 11, 0.95)',
+              borderColor: 'rgba(212,175,55,0.4)',
+              boxShadow: '0 8px 32px rgba(0,0,0,0.6)',
+              color: '#f5d78e'
+            }}
           >
-            👤 <span className="hidden sm:inline text-gold-gradient">{username}</span>
-          </button>
-          
-          <AnimatePresence>
-            {showProfile && (
-              <motion.div
-                initial={{ opacity: 0, y: 10, scale: 0.95 }}
-                animate={{ opacity: 1, y: 0, scale: 1 }}
-                exit={{ opacity: 0, y: 10, scale: 0.95 }}
-                className="absolute left-0 mt-2 w-48 rounded-xl p-4 shadow-xl z-50 text-left"
-                style={{
-                  background: 'rgba(9, 18, 11, 0.96)',
-                  backdropFilter: 'blur(20px)',
-                  border: '1px solid rgba(212, 175, 55, 0.3)',
-                  boxShadow: '0 10px 25px rgba(0,0,0,0.6)'
-                }}
-              >
-                <div className="text-xs font-semibold text-gray-400 mb-1">User: {username}</div>
-                <div className="text-xs font-semibold text-yellow-500 uppercase mb-3">Role: {role}</div>
-                <button
-                  onClick={onLogout}
-                  className="w-full py-2 rounded-lg text-xs font-semibold uppercase tracking-wider transition-all cursor-pointer"
-                  style={{
-                    background: 'rgba(139,26,26,0.3)',
-                    border: '1px solid rgba(192,57,43,0.4)',
-                    color: '#f1948a',
-                    minHeight: '32px'
-                  }}
-                >
-                  🚪 Logout
-                </button>
-              </motion.div>
+            <span>{moveBanner.msg}</span>
+            {moveBanner.card && (
+              <span className="scale-75 origin-center inline-block -my-2">
+                <PlayingCard card={moveBanner.card} size="sm" />
+              </span>
             )}
-          </AnimatePresence>
-        </div>
-      </div>
-
-      {/* Scoreboard toggle (mobile) */}
-      <motion.button
-        whileTap={{ scale: 0.9 }}
-        onClick={() => setShowScoreboard(!showScoreboard)}
-        className="absolute top-3 right-3 z-30 w-10 h-10 rounded-xl flex items-center justify-center sm:hidden"
-        style={{ background: 'rgba(9,18,11,0.85)', border: '1px solid rgba(212,175,55,0.3)', backdropFilter: 'blur(10px)' }}
-      >
-        <span className="text-lg">📊</span>
-      </motion.button>
-
-      {/* Desktop scoreboard (always visible) */}
-      <div className="hidden sm:block">
-        <Scoreboard
-          team1Score={gameState?.teamScores.team1}
-          team2Score={gameState?.teamScores.team2}
-          round={gameState?.roundNumber}
-          seepCount={gameState?.seepCount}
-        />
-      </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Dynamic Rules Guide Panel */}
-      <motion.div
-        drag
-        dragMomentum={false}
-        className="absolute top-6 right-6 z-40 hidden lg:block select-none"
-        style={{
-          background: 'rgba(9,18,11,0.95)',
-          border: '1px solid rgba(212,175,55,0.25)',
-          borderRadius: '12px',
-          padding: '16px',
-          width: '288px',
-          boxShadow: '0 8px 32px rgba(0, 0, 0, 0.4)',
-          backdropFilter: 'blur(8px)',
-        }}
-      >
-        <div className="flex items-center justify-between mb-2">
-          <div className="flex items-center gap-1.5 cursor-grab active:cursor-grabbing">
-            <span className="text-[10px] opacity-50">✥</span>
-            <span className="text-xs font-display tracking-widest uppercase text-gold-gradient font-bold">Rules Guide</span>
+      <div className="absolute top-16 right-4 z-40 hidden lg:block">
+        <motion.div
+          drag
+          dragMomentum={false}
+          className="glass-panel rounded-xl p-4 w-72 select-none"
+          style={{
+            background: 'rgba(9,18,11,0.95)',
+            border: '1px solid rgba(212,175,55,0.25)',
+            boxShadow: '0 8px 32px rgba(0, 0, 0, 0.4)',
+            backdropFilter: 'blur(8px)',
+          }}
+        >
+          <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center gap-1.5 cursor-grab active:cursor-grabbing">
+              <span className="text-[10px] opacity-50">✥</span>
+              <span className="text-xs font-display tracking-widest uppercase text-gold-gradient font-bold">Rules Guide</span>
+            </div>
+            <button onClick={() => setShowGuide(!showGuide)} className="text-xs text-gold-gradient hover:underline bg-transparent border-0 cursor-pointer min-h-0 py-0 px-1 font-bold">
+              {showGuide ? 'Hide' : 'Show'}
+            </button>
           </div>
-          <button onClick={() => setShowGuide(!showGuide)} className="text-xs text-gold-gradient hover:underline bg-transparent border-0 cursor-pointer min-h-0 py-0 px-1">
-            {showGuide ? 'Hide' : 'Show'}
-          </button>
-        </div>
-        {showGuide && (
-          <div className="text-[11px] leading-relaxed flex flex-col gap-2" style={{ color: 'rgba(245,240,232,0.75)' }}>
-            <div className="divider-gold opacity-30" style={{ margin: '4px 0' }} />
-            {gameState?.gamePhase === 'playing' && (
-              <>
-                <p><strong>🎯 Goal:</strong> First team to 100 points wins.</p>
-                <p><strong>♠️ Spades:</strong> Spades count for face value (A=1, J=11, Q=12, K=13).</p>
-                <p><strong>♦️ Diamonds:</strong> 10♦ counts for 6 points. Other Aces = 1 point.</p>
-                <p><strong>🏠 Houses:</strong> Max 2 houses. Unlayered houses (Kacha) can be distorted by opponents. Layered houses (2+ cards or value 13) are cemented (Pukta).</p>
-                <p><strong>🌊 Seeps:</strong> Clearing the floor = +50 points. Seeps cancel out at round end.</p>
-                <p><strong>⏳ First Turn:</strong> Non-dealers start with 4 cards and receive remaining 8 after their first move.</p>
-              </>
-            )}
-            {((gameState?.gamePhase as string) === 'bidding' || isBidding) && (
-              <>
-                <p><strong>Bidding Phase:</strong> The starting dealer must declare a bid value (9–13) based on their first 4 cards.</p>
-                <p><strong>Redeal:</strong> If the dealer has no cards &ge; 9 in their hand, cards are redealt.</p>
-              </>
-            )}
-          </div>
-        )}
-      </motion.div>
-
-      {/* Mobile scoreboard */}
-      <div className="sm:hidden">
-        <Scoreboard
-          team1Score={gameState?.teamScores.team1}
-          team2Score={gameState?.teamScores.team2}
-          round={gameState?.roundNumber}
-          seepCount={gameState?.seepCount}
-          isOpen={showScoreboard}
-          onClose={() => setShowScoreboard(false)}
-        />
+          {showGuide && (
+            <div className="text-[11px] leading-relaxed flex flex-col gap-2" style={{ color: 'rgba(245,240,232,0.75)' }}>
+              <div className="divider-gold opacity-30" style={{ margin: '4px 0' }} />
+              {gameState?.gamePhase === 'playing' && (
+                <>
+                  <p><strong>🎯 Goal:</strong> First team to 100 points wins.</p>
+                  <p><strong>♠️ Spades:</strong> Spades count for face value (A=1, J=11, Q=12, K=13).</p>
+                  <p><strong>♦️ Diamonds:</strong> 10♦ counts for 6 points. Other Aces = 1 point.</p>
+                  <p><strong>🏠 Houses:</strong> Max 2 houses. Unlayered houses (Kacha) can be distorted by opponents. Layered houses (2+ cards or value 13) are cemented (Pukta).</p>
+                  <p><strong>🌊 Seeps:</strong> Clearing the floor = +50 points. Seeps cancel out at round end.</p>
+                  <p><strong>⏳ First Turn:</strong> Non-dealers start with 4 cards and receive remaining 8 after their first move.</p>
+                </>
+              )}
+              {((gameState?.gamePhase as string) === 'bidding' || isBidding) && (
+                <>
+                  <p><strong>Bidding Phase:</strong> The starting dealer must declare a bid value (9–13) based on their first 4 cards.</p>
+                  <p><strong>Redeal:</strong> If the dealer has no cards &ge; 9 in their hand, cards are redealt.</p>
+                </>
+              )}
+            </div>
+          )}
+        </motion.div>
       </div>
 
-      {/* Game layout */}
-      <div className="relative w-full h-full flex flex-col items-center">
+      {/* Felt Board Dropzone for Throwing */}
+      <div 
+        className="relative w-full flex-1 flex flex-col items-center justify-center overflow-hidden felt-table"
+        onDragOver={(e) => e.preventDefault()}
+        onDrop={handleDropOnBoard}
+      >
+        {/* Table oval decoration */}
+        <div className="absolute inset-[5%] sm:inset-[8%] rounded-[50%] table-oval pointer-events-none" />
+
+        {/* Toast notifications */}
+        <AnimatePresence>
+          {toast && (
+            <motion.div
+              initial={{ y: -30, opacity: 0 }}
+              animate={{ y: 0, opacity: 1 }}
+              exit={{ y: -30, opacity: 0 }}
+              className="absolute top-6 px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold tracking-wide shadow-2xl border flex items-center gap-2 z-50 text-center"
+              style={toastColors[toast.type]}
+            >
+              <span>{toast.msg}</span>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
         {/* TOP — Partner across (in front) */}
         <div className="absolute top-4 sm:top-6 left-0 right-0 flex justify-center">
-          <PlayerHand cards={opponentCards} position="top" isOpponent label="Partner" />
+          <PlayerHand cards={partnerHandCards} position="top" isOpponent label={partnerUsername} />
         </div>
 
         {/* LEFT — Opponent (left side) */}
         <div className="absolute left-3 sm:left-6 top-1/2 -translate-y-1/2">
-          <PlayerHand cards={opponentCards.slice(0, 3)} position="left" isOpponent label="Opponent (L)" />
+          <PlayerHand cards={leftHandCards} position="left" isOpponent label={leftUsername} />
         </div>
 
         {/* RIGHT — Opponent (right side) */}
         <div className="absolute right-3 sm:right-6 top-1/2 -translate-y-1/2">
-          <PlayerHand cards={opponentCards.slice(0, 3)} position="right" isOpponent label="Opponent (R)" />
+          <PlayerHand cards={rightHandCards} position="right" isOpponent label={rightUsername} />
         </div>
 
-        {/* CENTER — Floor cards */}
-        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2" style={{ zIndex: 10 }}>
-          <FloorCards
-            cards={gameState?.floor || []}
-            highlightedIds={capturedCards.map(c => c.id)}
-          />
+        {/* CENTER — Table Floor (Loose Cards & Houses) */}
+        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 flex flex-col gap-5 sm:gap-6 items-center justify-center z-10 w-full max-w-2xl px-4">
+          {/* Loose Floor Cards */}
+          <div className="flex flex-col items-center">
+            <span className="text-[9px] sm:text-[10px] uppercase tracking-widest text-emerald-300/30 mb-1">Loose Cards</span>
+            <FloorCards
+              cards={gameState?.floor || []}
+              highlightedIds={capturedCards.map(c => c.id)}
+              onCardClick={handleCardClick}
+              onDropOnCard={handleDropOnCard}
+            />
+          </div>
+
+          {/* Active Houses */}
+          {gameState?.houses && gameState.houses.length > 0 && (
+            <div className="flex flex-col items-center w-full">
+              <span className="text-[9px] sm:text-[10px] uppercase tracking-widest text-emerald-300/30 mb-1.5">Active Houses</span>
+              <div className="flex flex-wrap gap-4 sm:gap-6 justify-center items-center">
+                {gameState.houses.map(house => {
+                  const isSelected = capturedCards.some(cc => house.cards.some(hc => hc.id === cc.id));
+                  return (
+                    <motion.div
+                      key={house.id}
+                      onClick={() => handleHouseClick(house)}
+                      onDragOver={(e) => e.preventDefault()}
+                      onDrop={(e) => handleDropOnHouse(e, house)}
+                      className={`relative flex flex-col items-center p-2.5 rounded-xl border transition-all cursor-pointer ${
+                        isSelected ? 'border-gold bg-gold/10' : 'border-emerald-800/40 bg-black/30 hover:border-emerald-600/30'
+                      }`}
+                      style={{ minWidth: '100px' }}
+                      whileHover={{ scale: 1.02 }}
+                    >
+                      {/* Badge */}
+                      <div className={`absolute -top-3 px-2 py-0.5 rounded-full text-[9px] font-bold shadow ${
+                        house.isPukta ? 'bg-gold-gradient text-emerald-950 border border-gold' : 'bg-emerald-900 border border-emerald-700 text-emerald-100'
+                      }`}>
+                        {house.isPukta ? '🏆' : '🏠'} House {house.value}
+                      </div>
+
+                      {/* Stack of Cards */}
+                      <div className="flex items-center justify-center mt-2.5 min-h-[84px] relative px-3">
+                        {house.cards.map((c, idx) => (
+                          <div
+                            key={c.id}
+                            style={{
+                              marginLeft: idx > 0 ? '-26px' : '0px',
+                              zIndex: idx,
+                              transform: `rotate(${(idx - (house.cards.length - 1) / 2) * 2}deg)`,
+                            }}
+                          >
+                            <PlayingCard card={c} size="sm" />
+                          </div>
+                        ))}
+                      </div>
+                    </motion.div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* BOTTOM — Player hand */}
@@ -356,7 +563,8 @@ export default function GameScreen({
             position="bottom"
             selectedCard={selectedCard}
             onSelectCard={handleCardClick}
-            label={userId}
+            onDragStart={handleDragStart}
+            label={`${username} (You)`}
           />
         </div>
 
@@ -388,7 +596,7 @@ export default function GameScreen({
                     </span>
                     {capturedCards.length > 0 && (
                       <span className="px-2 py-0.5 rounded-full text-xs font-semibold"
-                        style={{ background: 'rgba(22,160,133,0.2)', border: '1px solid rgba(22,160,133,0.4)', color: '#1abc9c' }}>
+                         style={{ background: 'rgba(22,160,133,0.2)', border: '1px solid rgba(22,160,133,0.4)', color: '#1abc9c' }}>
                         Can capture {capturedCards.length}
                       </span>
                     )}
@@ -402,66 +610,63 @@ export default function GameScreen({
                   </button>
                 </div>
 
-                {/* Action buttons */}
-                <div className="p-3 flex flex-wrap gap-2 items-center">
-                  {/* Capture */}
-                  {capturedCards.length > 0 && (
-                    <motion.button whileTap={{ scale: 0.94 }} onClick={handleCapture}
-                      className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold font-display tracking-wide"
-                      style={{ background: 'rgba(22,160,133,0.25)', border: '1px solid rgba(22,160,133,0.5)', color: '#1abc9c' }}>
-                      ⚡ Capture
+                {/* Actions container */}
+                <div className="p-3 sm:p-4 flex flex-col sm:flex-row gap-3 items-stretch sm:items-center justify-center">
+                  <div className="flex gap-3 flex-1 justify-center">
+                    <motion.button
+                      whileTap={{ scale: 0.94 }}
+                      onClick={handleCapture}
+                      disabled={capturedCards.length === 0}
+                      className={`flex-1 sm:flex-initial px-6 py-3 rounded-xl text-xs font-bold font-display uppercase tracking-widest transition-all ${
+                        capturedCards.length > 0 ? 'btn-gold animate-glow-pulse' : 'bg-black/30 text-gray-500 border border-gray-800 cursor-not-allowed'
+                      }`}
+                    >
+                      Capture Cards
                     </motion.button>
-                  )}
 
-                  {/* Throw */}
-                  <motion.button whileTap={{ scale: 0.94 }} onClick={handleThrow}
-                    disabled={!!houseValue}
-                    className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold font-display tracking-wide disabled:opacity-40"
-                    style={{ background: 'rgba(52,73,94,0.4)', border: '1px solid rgba(100,149,200,0.3)', color: 'rgba(245,240,232,0.7)' }}>
-                    ↑ Throw
-                  </motion.button>
+                    <motion.button
+                      whileTap={{ scale: 0.94 }}
+                      onClick={handleThrow}
+                      className="flex-1 sm:flex-initial px-6 py-3 rounded-xl text-xs font-bold font-display uppercase tracking-widest text-emerald-100 bg-emerald-950/40 border border-emerald-800/40 hover:border-emerald-600"
+                    >
+                      Throw Card
+                    </motion.button>
+                  </div>
 
-                  {/* House builder */}
-                  <div className="flex items-center gap-1.5 flex-wrap">
-                    <span className="text-xs" style={{ color: 'rgba(245,240,232,0.35)' }}>Build:</span>
-                    {[9, 10, 11, 12, 13, 14].map(v => (
-                      <motion.button key={v} whileTap={{ scale: 0.88 }}
-                        onClick={() => setHouseValue(houseValue === v ? null : v as any)}
-                        className="w-8 h-8 rounded-lg font-display font-bold text-xs"
-                        style={{
-                          minHeight: 'auto',
-                          background: houseValue === v ? 'rgba(212,175,55,0.3)' : 'rgba(0,0,0,0.4)',
-                          border: `1px solid ${houseValue === v ? 'rgba(212,175,55,0.6)' : 'rgba(212,175,55,0.15)'}`,
-                          color: houseValue === v ? '#d4af37' : 'rgba(245,240,232,0.5)',
-                          boxShadow: houseValue === v ? '0 0 10px rgba(212,175,55,0.2)' : 'none',
-                        }}>
-                        {v === 14 ? 'A' : v === 11 ? 'J' : v === 12 ? 'Q' : v === 13 ? 'K' : v}
-                      </motion.button>
-                    ))}
-                    {houseValue && (
-                      <motion.button whileTap={{ scale: 0.94 }} onClick={handleBuildHouse}
-                        className="px-3 py-1.5 rounded-xl text-xs font-bold font-display btn-gold"
-                        style={{ minHeight: 'auto' }}>
-                        ✦ Build {houseValue === 14 ? 'A' : houseValue === 11 ? 'J' : houseValue === 12 ? 'Q' : houseValue === 13 ? 'K' : houseValue}
-                      </motion.button>
-                    )}
+                  {/* House building interface */}
+                  <div className="flex items-center gap-2 justify-center border-t sm:border-t-0 sm:border-l border-emerald-800/20 pt-3 sm:pt-0 sm:pl-4">
+                    <span className="text-xs text-gray-400">House Value:</span>
+                    <div className="flex gap-1.5">
+                      {[9, 10, 11, 12, 13].map(v => (
+                        <motion.button
+                          key={v}
+                          whileTap={{ scale: 0.88 }}
+                          onClick={() => setHouseValue(v as any)}
+                          className={`w-8 h-8 rounded-lg text-xs font-bold transition-all ${
+                            houseValue === v
+                              ? 'bg-gold text-emerald-950 font-bold shadow'
+                              : 'bg-black/30 text-gray-400 border border-emerald-800/30 hover:border-gold/30'
+                          }`}
+                        >
+                          {v}
+                        </motion.button>
+                      ))}
+                    </div>
+
+                    <motion.button
+                      whileTap={{ scale: 0.94 }}
+                      onClick={handleBuildHouse}
+                      disabled={!houseValue}
+                      className={`px-5 py-3 rounded-xl text-xs font-bold font-display uppercase tracking-widest transition-all ${
+                        houseValue ? 'btn-gold' : 'bg-black/30 text-gray-500 border border-gray-800 cursor-not-allowed'
+                      }`}
+                    >
+                      Build
+                    </motion.button>
                   </div>
                 </div>
               </motion.div>
-            ) : (
-              <motion.div
-                key="hint-bar"
-                initial={{ y: 40, opacity: 0 }}
-                animate={{ y: 0, opacity: 1 }}
-                exit={{ y: 40, opacity: 0 }}
-                className="mx-2 sm:mx-4 mb-2 sm:mb-3 px-4 py-2 rounded-xl flex items-center justify-center gap-3"
-                style={{ background: 'rgba(9,18,11,0.7)', border: '1px solid rgba(212,175,55,0.1)', backdropFilter: 'blur(10px)' }}
-              >
-                <span className="text-xs" style={{ color: 'rgba(245,240,232,0.35)' }}>
-                  {hand.length > 0 ? '👆 Tap a card in your hand to play' : '⏳ Waiting for your cards...'}
-                </span>
-              </motion.div>
-            )}
+            ) : null}
           </AnimatePresence>
         </div>
       </div>

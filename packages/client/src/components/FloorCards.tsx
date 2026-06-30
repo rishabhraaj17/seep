@@ -6,9 +6,10 @@ interface FloorCardsProps {
   cards: Card[];
   highlightedIds?: string[];
   onCardClick?: (card: Card) => void;
+  onDropOnCard?: (e: React.DragEvent, card: Card) => void;
 }
 
-export default function FloorCards({ cards, highlightedIds = [], onCardClick }: FloorCardsProps) {
+export default function FloorCards({ cards, highlightedIds = [], onCardClick, onDropOnCard }: FloorCardsProps) {
   return (
     <div className="flex flex-wrap gap-2 sm:gap-3 justify-center items-center p-4 max-w-lg">
       {cards.map((card, index) => (
@@ -17,6 +18,8 @@ export default function FloorCards({ cards, highlightedIds = [], onCardClick }: 
           initial={{ scale: 0, rotate: Math.random() * 20 - 10, y: -20 }}
           animate={{ scale: 1, rotate: 0, y: 0 }}
           transition={{ delay: index * 0.06, type: 'spring', stiffness: 300, damping: 20 }}
+          onDragOver={(e) => e.preventDefault()}
+          onDrop={onDropOnCard ? (e) => onDropOnCard(e, card) : undefined}
         >
           <PlayingCard
             card={card}

@@ -69,6 +69,7 @@ export async function initDatabase() {
         first_turn_completed JSONB NOT NULL DEFAULT '[]'::jsonb,
         toss_winner VARCHAR(50),
         toss_history JSONB NOT NULL DEFAULT '[]'::jsonb,
+        hand_sizes JSONB NOT NULL DEFAULT '{}'::jsonb,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
@@ -85,10 +86,28 @@ export async function initDatabase() {
       ALTER TABLE game_states ADD COLUMN IF NOT EXISTS toss_history JSONB NOT NULL DEFAULT '[]'::jsonb;
     `);
 
+    await client.query(`
+      ALTER TABLE game_states ADD COLUMN IF NOT EXISTS hand_sizes JSONB NOT NULL DEFAULT '{}'::jsonb;
+    `);
+
     // Drop old check constraint and recreate to allow 'toss' phase
     await client.query(`
       ALTER TABLE game_states DROP CONSTRAINT IF EXISTS game_states_game_phase_check;
       ALTER TABLE game_states ADD CONSTRAINT game_states_game_phase_check CHECK (game_phase IN ('toss', 'bidding', 'playing', 'roundEnd', 'gameEnd'));
+    `);
+
+    // Create game_moves table
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS game_moves (
+        id SERIAL PRIMARY KEY,
+        lobby_code VARCHAR(10) REFERENCES lobbies(code) ON DELETE CASCADE,
+        player_id VARCHAR(50) NOT NULL,
+        action_type VARCHAR(20) NOT NULL,
+        card_played JSONB NOT NULL,
+        target_cards JSONB NOT NULL DEFAULT '[]'::jsonb,
+        house_value INTEGER,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
     `);
 
     await client.query('COMMIT');

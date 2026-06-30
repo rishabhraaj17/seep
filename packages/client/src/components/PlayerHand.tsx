@@ -8,6 +8,7 @@ interface PlayerHandProps {
   selectedCard?: Card | null;
   onSelectCard?: (card: Card) => void;
   label?: string;
+  onDragStart?: (e: React.DragEvent, card: Card) => void;
 }
 
 export default function PlayerHand({
@@ -17,6 +18,7 @@ export default function PlayerHand({
   selectedCard,
   onSelectCard,
   label,
+  onDragStart,
 }: PlayerHandProps) {
   const isVertical = position === 'left' || position === 'right';
   const cardSize = isVertical ? 'sm' : (position === 'bottom' ? 'md' : 'sm');
@@ -64,6 +66,8 @@ export default function PlayerHand({
           return (
             <div
               key={card.id}
+              draggable={!isOpponent}
+              onDragStart={!isOpponent && onDragStart ? (e) => onDragStart(e, card) : undefined}
               style={{
                 marginLeft: i > 0 ? (isBottom ? '-6px' : '-10px') : 0,
                 zIndex: isSelected ? 50 : i,

@@ -39,6 +39,13 @@ export interface Lobby {
   status: 'waiting' | 'bidding' | 'playing' | 'ended';
 }
 
+export interface GamePlayer {
+  id: string;
+  username: string;
+  team: number;
+  seat: number;
+}
+
 export interface GameState {
   lobbyCode: string;
   floor: FloorCard[];
@@ -58,6 +65,8 @@ export interface GameState {
   firstTurnCompleted: string[];
   tossWinner?: string;
   tossHistory?: { playerId: string; card: Card }[];
+  handSizes: Record<string, number>;
+  players: GamePlayer[];
 }
 
 export interface LobbyAction {
