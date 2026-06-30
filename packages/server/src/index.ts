@@ -929,20 +929,16 @@ io.on('connection', (socket: Socket) => {
         const winnerIndex = lobby.players.findIndex(p => p.id === tossWinnerId);
         if (winnerIndex !== -1) {
           const rotatedPlayers = [...lobby.players.slice(winnerIndex), ...lobby.players.slice(0, winnerIndex)];
-          // Temporarily shift seats to offset 10 to avoid unique key constraint violation
+          // Atomically delete and re-insert to bypass unique primary key and seat range check constraints
+          await client.query('DELETE FROM lobby_players WHERE lobby_code = $1', [lobbyCode]);
           for (let i = 0; i < rotatedPlayers.length; i++) {
+            const p = rotatedPlayers[i];
+            const team = (i === 0 || i === 2) ? 1 : 2;
             await client.query(
-              'UPDATE lobby_players SET seat = $1 WHERE lobby_code = $2 AND user_id = $3',
-              [i + 10, lobbyCode, rotatedPlayers[i].id]
+              'INSERT INTO lobby_players (lobby_code, user_id, socket_id, team, seat) VALUES ($1, $2, $3, $4, $5)',
+              [lobbyCode, p.id, p.socketId, team, i + 1]
             );
-          }
-          // Shift back to final rotated seats (1 to 4)
-          for (let i = 0; i < rotatedPlayers.length; i++) {
-            await client.query(
-              'UPDATE lobby_players SET seat = $1, team = $2 WHERE lobby_code = $3 AND user_id = $4',
-              [i + 1, (i === 0 || i === 2) ? 1 : 2, lobbyCode, rotatedPlayers[i].id]
-            );
-            rotatedPlayers[i].team = (i === 0 || i === 2) ? 1 : 2;
+            p.team = team;
           }
           lobby.players = rotatedPlayers;
         }
