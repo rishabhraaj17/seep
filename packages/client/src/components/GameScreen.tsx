@@ -109,6 +109,69 @@ function getHouseTeams(house: House, players: GamePlayer[]): (1 | 2)[] {
   return [...teams].sort();
 }
 
+function getRemainingHand(hand: Card[], playedCard: Card): Card[] {
+  return hand.filter(c => c.id !== playedCard.id);
+}
+
+function computeFloorDropEligibility(
+  playedCard: Card,
+  targetCard: Card,
+  hand: Card[]
+): { canEat: boolean; canBuild: boolean; sum: number } {
+  const playedVal = getCardValue(playedCard);
+  const targetVal = getCardValue(targetCard);
+  const sum = playedVal + targetVal;
+  const canEat = playedVal === targetVal;
+  const remainingHand = getRemainingHand(hand, playedCard);
+  const canBuild = sum >= 9 && sum <= 13 && remainingHand.some(c => getCardValue(c) === sum);
+  return { canEat, canBuild, sum };
+}
+
+function isOwnTeamHouse(house: House, players: GamePlayer[], userId: string): boolean {
+  const creator = players.find(p => p.id === house.createdBy);
+  const self = players.find(p => p.id === userId);
+  if (!creator || !self) return false;
+  return creator.team === self.team;
+}
+
+function canContributeToHouse(
+  playedCard: Card,
+  targetHouse: House,
+  floorCards: Card[],
+  players: GamePlayer[],
+  userId: string,
+  hand: Card[]
+): boolean {
+  // Mirrors the server's own-team relaxation: a teammate can always add
+  // matching cards to their own team's house without holding the closing value.
+  if (isOwnTeamHouse(targetHouse, players, userId)) return true;
+
+  const playedVal = getCardValue(playedCard);
+  const cleanFloorCards = floorCards.filter(fc => !targetHouse.cards.some(hc => hc.id === fc.id));
+  const floorSum = cleanFloorCards.reduce((sum, c) => sum + getCardValue(c), 0);
+  const isStacking = playedVal + floorSum === targetHouse.value;
+  const resultingValue = isStacking ? targetHouse.value : playedVal + targetHouse.value + floorSum;
+
+  if (resultingValue < 9 || resultingValue > 13) return false;
+  const remainingHand = getRemainingHand(hand, playedCard);
+  return remainingHand.some(c => getCardValue(c) === resultingValue);
+}
+
+function seededJitter(id: string): { rotate: number; x: number; y: number } {
+  let hash = 0;
+  for (let i = 0; i < id.length; i++) {
+    hash = (hash * 31 + id.charCodeAt(i)) | 0;
+  }
+  const rand = (seed: number) => {
+    const x = Math.sin(seed) * 10000;
+    return x - Math.floor(x);
+  };
+  const rotate = (rand(hash) - 0.5) * 16;
+  const x = (rand(hash + 1) - 0.5) * 14;
+  const y = (rand(hash + 2) - 0.5) * 10;
+  return { rotate, x, y };
+}
+
 export default function GameScreen({
   socket,
   userId,
