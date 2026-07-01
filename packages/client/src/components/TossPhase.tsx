@@ -47,13 +47,10 @@ export default function TossPhase({ gameState, userId }: TossPhaseProps) {
     cardsByPlayer[deal.playerId].push(deal.card);
   });
 
-  // Seats are always dealt in order 1..4; seat 1 is always "You" post-toss-rotation.
   const playersBySeat = [...(gameState.players || [])].sort((a, b) => a.seat - b.seat);
-  const seatLabel = (seat: number) => {
-    if (seat === 1) return 'You';
-    if (seat === 3) return 'Partner';
-    return 'Opponent';
-  };
+  const mySeat = gameState.players?.find(p => p.id === userId)?.seat || 1;
+  const partnerSeat = ((mySeat + 1) % 4) + 1;
+  const seatLabel = (seat: number) => (seat === partnerSeat ? 'Partner' : 'Opponent');
 
   return (
     <div className="relative min-h-screen flex items-center justify-center p-4 overflow-hidden felt-bg">
@@ -79,7 +76,7 @@ export default function TossPhase({ gameState, userId }: TossPhaseProps) {
         
         <p className="text-xs max-w-xl mx-auto mb-6 text-emerald-100/70">
           The deck is shuffled and cards are dealt face-up one-by-one to each player.
-          The first player to receive a <strong>Jack (J)</strong> wins the toss, becomes player 0, and places the opening bid!
+          The first player to receive a <strong>Jack (J)</strong> wins the toss and becomes the dealer for the round!
         </p>
 
         {/* Toss status message */}
@@ -155,8 +152,8 @@ export default function TossPhase({ gameState, userId }: TossPhaseProps) {
           style={{ background: 'rgba(0,0,0,0.4)', border: '1px solid rgba(212,175,55,0.1)' }}>
           <div className="font-semibold text-gold-gradient mb-1">✦ Current Rules context:</div>
           <span style={{ color: 'rgba(var(--text-rgb),0.65)' }}>
-            Seep is played in partnerships. Seat 1 (You) and Seat 3 (Partner) form Team 1, and Seat 2 & Seat 4 form Team 2.
-            The Jack Toss winner is rotated to Seat 1 for the game, earning the bidding dealer seat.
+            Seep is played in partnerships: you and the player across the table (2 seats away) are partners against the other pair.
+            The Jack Toss winner becomes the dealer for the round, and the player after them opens the bidding as caller.
           </span>
         </div>
       </motion.div>

@@ -70,8 +70,11 @@ function computeFloorDropEligibility(
 ): { canEat: boolean; canBuild: boolean; sum: number } {
   const playedVal = getCardValue(playedCard);
   const targetVal = getCardValue(targetCard);
-  const sum = playedVal + targetVal;
-  const canEat = playedVal === targetVal;
+  const isMatchingRank = playedVal === targetVal;
+  // Two cards of the same rank stack into a house of that rank (e.g. K+K -> house of 13),
+  // rather than a house of their arithmetic sum.
+  const sum = isMatchingRank ? playedVal : playedVal + targetVal;
+  const canEat = isMatchingRank;
   const remainingHand = getRemainingHand(hand, playedCard);
   const canBuild = sum >= 9 && sum <= 13 && remainingHand.some(c => getCardValue(c) === sum);
   return { canEat, canBuild, sum };
