@@ -202,6 +202,17 @@ function dealRemainingCardsIfFirstTurn(lobby: LobbyState, playerId: string, play
           biddingPlayerIndex: 0,
         });
       }
+    } else {
+      // Caller (seat 0) already has all 12 cards from deal time — just reveal them now.
+      if (socket) {
+        socket.emit('deal-cards', {
+          lobbyCode: lobby.code,
+          floor: lobby.gameState!.floor,
+          hand: lobby.hands!.get(playerId) || [],
+          playerIndex,
+          biddingPlayerIndex: 0,
+        });
+      }
     }
   }
 }
@@ -705,18 +716,6 @@ async function checkAndTriggerBotTurn(lobbyCode: string) {
           const bidVal = rankToValue[bidCard.rank];
           currentLobby.gameState.bid = { playerId: bidder.id, value: bidVal, fulfilled: false };
           currentLobby.gameState.gamePhase = 'playing';
-
-          // Human dealer immediately sees the floor cards face-up when bid is announced
-          const dealerPlayer = currentLobby.players[3];
-          if (dealerPlayer && !dealerPlayer.id.startsWith('Bot_')) {
-            io.to(dealerPlayer.socketId).emit('deal-cards', {
-              lobbyCode: currentLobby.code,
-              floor: currentLobby.gameState.floor,
-              hand: currentLobby.hands?.get(dealerPlayer.id) || [],
-              playerIndex: 3,
-              biddingPlayerIndex: 0,
-            });
-          }
 
           await saveLobby(currentLobby);
 
@@ -1597,29 +1596,6 @@ io.on('connection', (socket: Socket) => {
         targetCards: [],
         houseValue: bid,
       });
-      // Dealer immediately sees the floor face-up when bid is announced
-      const dealerPlayer = lobby.players[3]; // dealer is always index 3
-      if (dealerPlayer && !dealerPlayer.id.startsWith('Bot_')) {
-        io.to(dealerPlayer.socketId).emit('deal-cards', {
-          lobbyCode,
-          floor: lobby.gameState.floor, // real face-up cards for dealer
-          hand: (lobby.hands.get(dealerPlayer.id) || []).slice(0, 4),
-          playerIndex: 3,
-          biddingPlayerIndex: 0,
-        });
-      }
-
-      // Also update caller's hand view with the full 12 cards now dealt
-      if (!biddingPlayer.id.startsWith('Bot_')) {
-        io.to(socket.id).emit('deal-cards', {
-          lobbyCode,
-          floor: lobby.gameState.floor,
-          hand: lobby.hands.get(playerId) || [],
-          playerIndex: 0,
-          biddingPlayerIndex: 0,
-        });
-      }
-
       await checkAndTriggerBotTurn(lobbyCode);
     } catch (err) {
       await client.query('ROLLBACK');
