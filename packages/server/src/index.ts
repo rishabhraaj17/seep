@@ -186,7 +186,7 @@ function dealRemainingCardsIfFirstTurn(lobby: LobbyState, playerId: string, play
   const hasCompletedFirstTurn = lobby.gameState!.firstTurnCompleted.includes(playerId);
   if (!hasCompletedFirstTurn) {
     lobby.gameState!.firstTurnCompleted.push(playerId);
-    if (playerIndex < 3) {
+    if (playerIndex > 0) {
       const currentHand = lobby.hands!.get(playerId) || [];
       const remainingDeck = lobby.gameState!.deck || [];
       const drawn = remainingDeck.slice(0, 8);
@@ -542,11 +542,11 @@ async function startNextRound(lobbyCode: string, dealerPlayerIndex: number) {
     const deck = shuffle(createDeck());
     const floorCards = deck.slice(0, 4);
 
-    // Non-dealers (indices 0-2) get 4 cards; dealer (index 3) gets 12
-    const hand0 = deck.slice(4, 8);
-    const hand1 = deck.slice(8, 12);
-    const hand2 = deck.slice(12, 16);
-    const hand3 = deck.slice(16, 28);  // dealer gets 12
+    // Player 0 (caller) gets 12 cards; others (including dealer) get 4
+    const hand0 = deck.slice(4, 16);  // caller gets 12
+    const hand1 = deck.slice(16, 20); // others get 4
+    const hand2 = deck.slice(20, 24);
+    const hand3 = deck.slice(24, 28);
     const remainingDeck = deck.slice(28, 52);
 
     lobby.hands = new Map();
@@ -733,8 +733,8 @@ async function checkAndTriggerBotTurn(lobbyCode: string) {
         const hasCompletedFirstTurn = currentLobby.gameState.firstTurnCompleted.includes(currentPlayer.id);
         const playerIndex = currentLobby.gameState.currentPlayerIndex;
 
-        // Enforce visible hand limit (dealer index 3 is exempt)
-        const visibleHand = (playerIndex === 3 || playerIndex === 0 || hasCompletedFirstTurn) ? hand : hand.slice(0, 4);
+        // Enforce visible hand limit (caller index 0 is exempt)
+        const visibleHand = (playerIndex === 0 || hasCompletedFirstTurn) ? hand : hand.slice(0, 4);
         if (visibleHand.length === 0) return;
 
         let playAction = 'THROW';
@@ -1361,7 +1361,7 @@ io.on('connection', (socket: Socket) => {
 
       const hand = lobby.hands.get(userId) || [];
       let visibleHand = hand;
-      if (playerIndex !== 3) {
+      if (playerIndex !== 0) {
         if (lobby.gameState.gamePhase === 'toss' || lobby.gameState.gamePhase === 'bidding') {
           visibleHand = hand.slice(0, 4);
         } else {
@@ -1445,14 +1445,14 @@ io.on('connection', (socket: Socket) => {
 
         lobby.status = 'bidding';
 
-        // 3. Deal cards (initial deal: floor gets 4, players get 4, dealer gets 12)
+        // 3. Deal cards (initial deal: floor gets 4, player 0 gets 12, others get 4)
         const deck = shuffle(createDeck());
         const floorCards = deck.slice(0, 4);
         
-        const hand0 = deck.slice(4, 8);
-        const hand1 = deck.slice(8, 12);
-        const hand2 = deck.slice(12, 16);
-        const hand3 = deck.slice(16, 28);
+        const hand0 = deck.slice(4, 16);  // caller gets 12
+        const hand1 = deck.slice(16, 20); // others get 4
+        const hand2 = deck.slice(20, 24);
+        const hand3 = deck.slice(24, 28);
         const remainingDeck = deck.slice(28, 52);
 
         lobby.hands = new Map();
@@ -1587,7 +1587,7 @@ io.on('connection', (socket: Socket) => {
         io.to(dealerPlayer.socketId).emit('deal-cards', {
           lobbyCode,
           floor: lobby.gameState.floor, // real face-up cards for dealer
-          hand: lobby.hands.get(dealerPlayer.id) || [],
+          hand: (lobby.hands.get(dealerPlayer.id) || []).slice(0, 4),
           playerIndex: 3,
           biddingPlayerIndex: 0,
         });
@@ -1795,7 +1795,7 @@ io.on('connection', (socket: Socket) => {
       const hand = lobby.hands.get(playerId) || [];
       const hasCompletedFirstTurn = lobby.gameState.firstTurnCompleted.includes(playerId);
       const playerIndex = lobby.players.findIndex(p => p.id === playerId);
-      const visibleHand = (playerIndex === 3 || hasCompletedFirstTurn) ? hand : hand.slice(0, 4);
+      const visibleHand = (playerIndex === 0 || hasCompletedFirstTurn) ? hand : hand.slice(0, 4);
 
       if (!visibleHand.some(c => c.id === card.id)) {
         socket.emit('error-message', { message: 'Card not in hand' });
