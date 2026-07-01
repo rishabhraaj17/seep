@@ -612,7 +612,7 @@ async function startNextRound(lobbyCode: string, dealerPlayerIndex: number) {
       io.to(p.socketId).emit('deal-cards', {
         lobbyCode,
         floor: faceDownFloor,
-        hand: i === 3 ? hand3 : [hand0, hand1, hand2][i],
+        hand: i === 0 ? hand0.slice(0, 4) : (i === 3 ? hand3 : [hand0, hand1, hand2][i]),
         playerIndex: i,
         biddingPlayerIndex: 0,
       });
@@ -1374,14 +1374,12 @@ io.on('connection', (socket: Socket) => {
 
       const hand = lobby.hands.get(userId) || [];
       let visibleHand = hand;
-      if (playerIndex !== 0) {
-        if (lobby.gameState.gamePhase === 'toss' || lobby.gameState.gamePhase === 'bidding') {
+      if (lobby.gameState.gamePhase === 'toss' || lobby.gameState.gamePhase === 'bidding') {
+        visibleHand = hand.slice(0, 4);
+      } else {
+        const hasCompletedFirstTurn = lobby.gameState.firstTurnCompleted.includes(userId);
+        if (!hasCompletedFirstTurn) {
           visibleHand = hand.slice(0, 4);
-        } else {
-          const hasCompletedFirstTurn = lobby.gameState.firstTurnCompleted.includes(userId);
-          if (!hasCompletedFirstTurn) {
-            visibleHand = hand.slice(0, 4);
-          }
         }
       }
 
@@ -1668,7 +1666,7 @@ io.on('connection', (socket: Socket) => {
 
           io.to(callerPlayer.socketId).emit('deal-cards', {
             lobbyCode,
-            floor: lobby.gameState.floor,
+            floor: lobby.gameState.floor.map(c => ({ ...c, faceDown: true })),
             hand: updatedHand.slice(0, 4),
             playerIndex: 0,
             biddingPlayerIndex: 0,
@@ -1712,7 +1710,7 @@ io.on('connection', (socket: Socket) => {
 
           io.to(callerPlayer.socketId).emit('deal-cards', {
             lobbyCode,
-            floor: lobby.gameState.floor,
+            floor: lobby.gameState.floor.map(c => ({ ...c, faceDown: true })),
             hand: updatedHand.slice(0, 4),
             playerIndex: 0,
             biddingPlayerIndex: 0,
