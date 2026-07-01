@@ -62,24 +62,24 @@ export function chooseBestBotMove(
     }
 
     // 3. EVALUATE DISTORTING OPPONENT'S HOUSE
-    // Opponent's house of value 'V' < val (val between 9-13), not pukta
-    if (val >= 9 && val <= 13) {
-      const opponentHouses = gameState.houses.filter(h => {
-        const creator = players.find(p => p.id === h.createdBy);
-        return creator && creator.team !== team && h.value < val && !h.isPukta && h.value !== 13;
-      });
-      for (const h of opponentHouses) {
-        // Need a card in hand that equals (val - h.value)
-        const neededVal = val - h.value;
-        const hasHelper = hand.find(hc => hc.id !== card.id && getCardNumericValue(hc) === neededVal);
-        if (hasHelper) {
+    // We play 'card' (P) targeting opponent's non-cemented house 'h' (F) to distort to targetHouseVal = P + F
+    const opponentHouses = gameState.houses.filter(h => {
+      const creator = players.find(p => p.id === h.createdBy);
+      return creator && creator.team !== team && !h.isPukta && h.value !== 13;
+    });
+    for (const h of opponentHouses) {
+      const targetHouseVal = val + h.value;
+      if (targetHouseVal >= 9 && targetHouseVal <= 13) {
+        // We must hold targetHouseVal in our remaining hand to own it
+        const hasOwnerCard = hand.some(hc => hc.id !== card.id && getCardNumericValue(hc) === targetHouseVal);
+        if (hasOwnerCard) {
           const housePoints = h.cards.reduce((sum, c) => sum + getPointValue(c), 0);
           const score = 1000 + housePoints + getPointValue(card);
           plays.push({
             action: 'BUILD_HOUSE',
             card,
             targetCards: h.cards,
-            houseValue: val,
+            houseValue: targetHouseVal,
             score
           });
         }
@@ -114,15 +114,20 @@ export function chooseBestBotMove(
     }
 
     // 5. EVALUATE CREATING A NEW HOUSE
-    if (val >= 9 && val <= 13) {
-      // Find floor card we can combine with
-      for (const fc of floor) {
-        if (getCardNumericValue(fc) < val) {
-          const needed = val - getCardNumericValue(fc);
-          const extra = hand.find(hc => hc.id !== card.id && getCardNumericValue(hc) === needed);
-          if (extra) {
-            plays.push({ action: 'BUILD_HOUSE', card, targetCards: [fc], houseValue: val, score: 500 });
-          }
+    // We play 'card' (P) targeting 'fc' (F) on the floor to make targetHouseVal = P + F
+    for (const fc of floor) {
+      const targetHouseVal = val + getCardNumericValue(fc);
+      if (targetHouseVal >= 9 && targetHouseVal <= 13) {
+        // We must hold targetHouseVal in our remaining hand to own it
+        const hasOwnerCard = hand.some(hc => hc.id !== card.id && getCardNumericValue(hc) === targetHouseVal);
+        if (hasOwnerCard) {
+          plays.push({
+            action: 'BUILD_HOUSE',
+            card,
+            targetCards: [fc],
+            houseValue: targetHouseVal,
+            score: 500
+          });
         }
       }
     }
