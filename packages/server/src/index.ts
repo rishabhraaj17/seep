@@ -1886,15 +1886,36 @@ io.on('connection', (socket: Socket) => {
           isValidBuild = false;
           validationFailureReason = `Invalid house value: ${houseValue}`;
         } else {
+          targetedHouseIndex = lobby.gameState.houses.findIndex(h =>
+            h.cards.some(hc => (targetCards || []).some(tc => tc.id === hc.id))
+          );
+
           const remainingHand = hand.filter(c => c.id !== card.id);
-          if (!remainingHand.some(c => getCardNumericValue(c) === houseValue)) {
+          const holdsHouseValue = remainingHand.some(c => getCardNumericValue(c) === houseValue);
+
+          // A teammate contributing (not distorting) to their own team's existing
+          // house doesn't need to personally hold the closing value — the team
+          // already has a stake in that house. Every other path (new builds,
+          // distortions, opponent-house contributions) still requires it.
+          let requiresHoldingValue = true;
+          if (targetedHouseIndex !== -1) {
+            const targetedHouseObj = lobby.gameState.houses[targetedHouseIndex]!;
+            const willBeDistortion = targetedHouseObj.value !== houseValue;
+            if (!willBeDistortion) {
+              const creatorIndex = lobby.players.findIndex(p => p.id === targetedHouseObj.createdBy);
+              const playerIndex = lobby.players.findIndex(p => p.id === playerId);
+              const creatorTeam = creatorIndex !== -1 ? lobby.players[creatorIndex]?.team : undefined;
+              const playerTeam = playerIndex !== -1 ? lobby.players[playerIndex]?.team : undefined;
+              if (creatorTeam !== undefined && creatorTeam === playerTeam) {
+                requiresHoldingValue = false;
+              }
+            }
+          }
+
+          if (requiresHoldingValue && !holdsHouseValue) {
             isValidBuild = false;
             validationFailureReason = `Player does not hold matching card value ${houseValue} in hand after play`;
           } else {
-            targetedHouseIndex = lobby.gameState.houses.findIndex(h => 
-              h.cards.some(hc => (targetCards || []).some(tc => tc.id === hc.id))
-            );
-
             if (targetedHouseIndex === -1) {
               if (lobby.gameState.houses.length >= 2) {
                 isValidBuild = false;
