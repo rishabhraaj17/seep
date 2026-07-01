@@ -205,6 +205,14 @@ function dealRemainingCardsIfFirstTurn(lobby: LobbyState, playerId: string, play
     }
   }
 }
+
+function redactGameStateForBroadcast(gameState: GameState): GameState {
+  if (gameState.gamePhase === 'toss' || gameState.gamePhase === 'bidding') {
+    return { ...gameState, floor: gameState.floor.map(c => ({ ...c, faceDown: true })) };
+  }
+  return gameState;
+}
+
 function getHouseContributedTeams(house: House, players: { id: string; team: number; }[]): { team1: boolean; team2: boolean } {
   const result = { team1: false, team2: false };
   const contributors = house.contributors || [house.createdBy];
@@ -493,7 +501,7 @@ async function checkRoundEnd(lobby: LobbyState) {
     lobby.gameState.gamePhase = 'gameEnd';
     await saveLobby(lobby);
     console.log(`[GAME END] Lobby ${lobby.code}: final score ${lobby.gameState.teamScores.team1}-${lobby.gameState.teamScores.team2}`);
-    io.to(lobby.code).emit('game-state', lobby.gameState);
+    io.to(lobby.code).emit('game-state', redactGameStateForBroadcast(lobby.gameState));
     return;
   }
 
@@ -502,7 +510,7 @@ async function checkRoundEnd(lobby: LobbyState) {
   lobby.gameState.dealerSelectionTeam = losingTeam;
 
   await saveLobby(lobby);
-  io.to(lobby.code).emit('game-state', lobby.gameState);
+  io.to(lobby.code).emit('game-state', redactGameStateForBroadcast(lobby.gameState));
 
   // If ALL losing-team players are bots, auto-select the first one as dealer
   const losingPlayers = lobby.players.filter(p => p.team === losingTeam);
@@ -587,7 +595,7 @@ async function startNextRound(lobbyCode: string, dealerPlayerIndex: number) {
     await client.query('COMMIT');
 
     // Re-enter bidding flow: deal face-down floor + initial hands
-    io.to(lobbyCode).emit('game-state', lobby.gameState);
+    io.to(lobbyCode).emit('game-state', redactGameStateForBroadcast(lobby.gameState));
     const faceDownFloor = floorCards.map(c => ({ ...c, faceDown: true }));
     lobby.players.forEach((p, i) => {
       io.to(p.socketId).emit('deal-cards', {
@@ -660,13 +668,13 @@ async function checkAndTriggerBotTurn(lobbyCode: string) {
             await saveLobby(currentLobby, client);
             await client.query('COMMIT');
             
-            io.to(lobbyCode).emit('game-state', currentLobby.gameState);
+            io.to(lobbyCode).emit('game-state', redactGameStateForBroadcast(currentLobby.gameState));
             await checkAndTriggerBotTurn(lobbyCode);
           } else {
             currentLobby.gameState.askAbove8 = false;
             await saveLobby(currentLobby, client);
             await client.query('COMMIT');
-            io.to(lobbyCode).emit('game-state', currentLobby.gameState);
+            io.to(lobbyCode).emit('game-state', redactGameStateForBroadcast(currentLobby.gameState));
             await checkAndTriggerBotTurn(lobbyCode);
           }
         } catch (err) {
@@ -713,7 +721,7 @@ async function checkAndTriggerBotTurn(lobbyCode: string) {
           await saveLobby(currentLobby);
 
           io.to(currentLobby.code).emit('bid-placed', { bid: bidVal, playerId: bidder.id });
-          io.to(currentLobby.code).emit('game-state', currentLobby.gameState);
+          io.to(currentLobby.code).emit('game-state', redactGameStateForBroadcast(currentLobby.gameState));
           
           await checkAndTriggerBotTurn(currentLobby.code);
         }
@@ -817,7 +825,7 @@ async function checkAndTriggerBotTurn(lobbyCode: string) {
             currentLobby.gameState.currentPlayerIndex = (currentLobby.gameState.currentPlayerIndex + 1) % 4;
             await logMove(pool, lobbyCode, currentPlayer.id, 'THROW', selectedCard, [], undefined);
             await saveLobby(currentLobby);
-            io.to(currentLobby.code).emit('game-state', currentLobby.gameState);
+            io.to(currentLobby.code).emit('game-state', redactGameStateForBroadcast(currentLobby.gameState));
             await checkRoundEnd(currentLobby);
             await checkAndTriggerBotTurn(currentLobby.code);
             return;
@@ -945,7 +953,7 @@ async function checkAndTriggerBotTurn(lobbyCode: string) {
           houseValue,
         });
 
-        io.to(currentLobby.code).emit('game-state', currentLobby.gameState);
+        io.to(currentLobby.code).emit('game-state', redactGameStateForBroadcast(currentLobby.gameState));
         io.to(currentLobby.code).emit('game-updated', {
           lobbyCode: currentLobby.code,
           action: playAction,
@@ -1010,7 +1018,7 @@ async function proceedToBidding(lobbyCode: string) {
     await saveLobby(lobby, client);
     await client.query('COMMIT');
 
-    io.to(lobbyCode).emit('game-state', lobby.gameState);
+    io.to(lobbyCode).emit('game-state', redactGameStateForBroadcast(lobby.gameState));
 
     const gameState = lobby.gameState!;
     const hands = lobby.hands!;
@@ -1391,7 +1399,7 @@ io.on('connection', (socket: Socket) => {
         biddingPlayerIndex: 0,
       });
 
-      socket.emit('game-state', lobby.gameState);
+      socket.emit('game-state', redactGameStateForBroadcast(lobby.gameState));
 
       await checkAndTriggerBotTurn(lobbyCode);
     } catch (err) {
@@ -1503,7 +1511,7 @@ io.on('connection', (socket: Socket) => {
         await client.query('COMMIT');
 
         io.to(lobbyCode).emit('game-started', { lobbyCode });
-        io.to(lobbyCode).emit('game-state', lobby.gameState);
+        io.to(lobbyCode).emit('game-state', redactGameStateForBroadcast(lobby.gameState));
 
         // Automatically proceed to bidding after 5 seconds to show toss deals in UI
         setTimeout(async () => {
@@ -1572,7 +1580,7 @@ io.on('connection', (socket: Socket) => {
 
       console.log(`[BID PLACED] Lobby ${lobbyCode}: ${playerId} called ${bid} with ${bidCard.rank}${bidCard.suit}`);
       io.to(lobbyCode).emit('bid-placed', { bid, playerId });
-      io.to(lobbyCode).emit('game-state', lobby.gameState);
+      io.to(lobbyCode).emit('game-state', redactGameStateForBroadcast(lobby.gameState));
 
       let username = playerId;
       if (!playerId.startsWith('Bot_')) {
@@ -1688,14 +1696,14 @@ io.on('connection', (socket: Socket) => {
             biddingPlayerIndex: 0,
           });
 
-          io.to(lobbyCode).emit('game-state', lobby.gameState);
+          io.to(lobbyCode).emit('game-state', redactGameStateForBroadcast(lobby.gameState));
         }
       } else {
         if (hasAbove8) {
           lobby.gameState.askAbove8 = false;
           await saveLobby(lobby, client);
           await client.query('COMMIT');
-          io.to(lobbyCode).emit('game-state', lobby.gameState);
+          io.to(lobbyCode).emit('game-state', redactGameStateForBroadcast(lobby.gameState));
         } else {
           let currentDeck = lobby.gameState.deck || [];
           if (currentDeck.length < 4) {
@@ -1732,7 +1740,7 @@ io.on('connection', (socket: Socket) => {
             biddingPlayerIndex: 0,
           });
 
-          io.to(lobbyCode).emit('game-state', lobby.gameState);
+          io.to(lobbyCode).emit('game-state', redactGameStateForBroadcast(lobby.gameState));
         }
       }
     } catch (err) {
@@ -2018,7 +2026,7 @@ io.on('connection', (socket: Socket) => {
         lobby.hands.set(playerId, hand.filter(c => c.id !== card.id));
         dealRemainingCardsIfFirstTurn(lobby, playerId, playerIndex, socket);
         lobby.gameState.currentPlayerIndex = (lobby.gameState.currentPlayerIndex + 1) % 4;
-        io.to(lobbyCode).emit('game-state', lobby.gameState);
+        io.to(lobbyCode).emit('game-state', redactGameStateForBroadcast(lobby.gameState));
       } else if (actionType === 'THROW') {
         const isCallerFirstTurn = (playerIndex === 0 && !hasCompletedFirstTurn);
         if (isCallerFirstTurn) {
@@ -2045,7 +2053,7 @@ io.on('connection', (socket: Socket) => {
         lobby.hands.set(playerId, hand.filter(c => c.id !== card.id));
         dealRemainingCardsIfFirstTurn(lobby, playerId, playerIndex, socket);
         lobby.gameState.currentPlayerIndex = (lobby.gameState.currentPlayerIndex + 1) % 4;
-        io.to(lobbyCode).emit('game-state', lobby.gameState);
+        io.to(lobbyCode).emit('game-state', redactGameStateForBroadcast(lobby.gameState));
       } else if (actionType === 'BUILD_HOUSE') {
         const houseValue = initialHouseValue as number;
         if (targetedHouseIndex === -1) {
@@ -2128,7 +2136,7 @@ io.on('connection', (socket: Socket) => {
         lobby.hands.set(playerId, hand.filter(c => c.id !== card.id));
         dealRemainingCardsIfFirstTurn(lobby, playerId, playerIndex, socket);
         lobby.gameState.currentPlayerIndex = (lobby.gameState.currentPlayerIndex + 1) % 4;
-        io.to(lobbyCode).emit('game-state', lobby.gameState);
+        io.to(lobbyCode).emit('game-state', redactGameStateForBroadcast(lobby.gameState));
       }
 
       await logMove(client, lobbyCode, playerId, actionType, card, targetCards, houseValue);
