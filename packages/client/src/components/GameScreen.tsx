@@ -28,56 +28,6 @@ function getCardValue(card: Card): number {
   return parseInt(card.rank, 10);
 }
 
-function groupHouseCards(cards: Card[], targetValue: number): Card[][] {
-  const result: Card[][] = [];
-  const remaining = [...cards];
-
-  const findAndRemoveSubset = (): boolean => {
-    let foundPath: Card[] | null = null;
-    const search = (startIndex: number, currentSum: number, path: Card[]): boolean => {
-      if (currentSum === targetValue) {
-        foundPath = [...path];
-        return true;
-      }
-      if (currentSum > targetValue) {
-        return false;
-      }
-      for (let i = startIndex; i < remaining.length; i++) {
-        const card = remaining[i];
-        const val = getCardValue(card);
-        path.push(card);
-        if (search(i + 1, currentSum + val, path)) {
-          return true;
-        }
-        path.pop();
-      }
-      return false;
-    };
-
-    if (search(0, 0, [])) {
-      if (foundPath) {
-        (foundPath as Card[]).forEach(c => {
-          const idx = remaining.findIndex(rc => rc.id === c.id);
-          if (idx !== -1) remaining.splice(idx, 1);
-        });
-        result.push(foundPath);
-        return true;
-      }
-    }
-    return false;
-  };
-
-  while (remaining.length > 0) {
-    const found = findAndRemoveSubset();
-    if (!found) {
-      remaining.forEach(c => result.push([c]));
-      break;
-    }
-  }
-
-  return result;
-}
-
 function findCapturableCards(card: Card, floor: Card[]): Card[] {
   const val = getCardValue(card);
   const direct = floor.filter(f => getCardValue(f) === val);
@@ -655,7 +605,7 @@ export default function GameScreen({
               <>
                 <div className="text-[10px] uppercase tracking-wider font-bold text-gold-gradient mb-2">Admin Panel</div>
                 <div className="flex items-center justify-between mb-3 text-xs text-gray-300">
-                  <span>Reveal House Cards</span>
+                  <span>Reveal Stack Order</span>
                   <button
                     onClick={() => setAdminShowHouseCards(!adminShowHouseCards)}
                     className={`px-3 py-1 rounded-md text-[10px] font-bold uppercase transition-all cursor-pointer ${
@@ -864,7 +814,6 @@ export default function GameScreen({
               <div className="flex flex-wrap gap-4 sm:gap-6 justify-center items-center">
                 {gameState.houses.map(house => {
                   const isSelected = capturedCards.some(cc => house.cards.some(hc => hc.id === cc.id));
-                  const groups = groupHouseCards(house.cards, house.value);
                   const houseTeams = getHouseTeams(house, gameState.players);
                   const canViewStack = role === 'admin' && adminShowHouseCards;
                   return (
@@ -917,34 +866,24 @@ export default function GameScreen({
                         </button>
                       )}
 
-                      {/* Stack of Cards grouped together */}
-                      {role === 'admin' && adminShowHouseCards ? (
-                        <div className="flex gap-2 items-start justify-center mt-2.5 min-h-[96px] px-2">
-                          {groups.map((group, gIdx) => (
-                            <div key={gIdx} className="flex flex-col items-center">
-                              {group.map((c, cIdx) => (
-                                <div
-                                  key={c.id}
-                                  style={{
-                                    marginTop: cIdx > 0 ? '-28px' : '0px',
-                                    zIndex: cIdx,
-                                    position: 'relative',
-                                  }}
-                                >
-                                  <PlayingCard card={c} size="sm" />
-                                </div>
-                              ))}
+                      {/* Haphazard real-card stack — always visible to every player */}
+                      <div className="relative flex items-center justify-center mt-2.5 min-h-[96px]" style={{ minWidth: '80px' }}>
+                        {house.cards.map((c, cIdx) => {
+                          const { rotate, x, y } = seededJitter(c.id);
+                          return (
+                            <div
+                              key={c.id}
+                              style={{
+                                position: 'absolute',
+                                transform: `translate(${x}px, ${y - cIdx * 2}px) rotate(${rotate}deg)`,
+                                zIndex: cIdx,
+                              }}
+                            >
+                              <PlayingCard card={c} size="sm" />
                             </div>
-                          ))}
-                        </div>
-                      ) : (
-                        <div className="flex flex-col items-center justify-center mt-2.5 min-h-[96px] px-4 py-2 border border-emerald-800/10 rounded-lg bg-black/40">
-                          <span className="text-[20px] mb-1">🃏</span>
-                          <span className="text-[10px] text-gray-400 tracking-wide font-display">
-                            {house.cards.length} Cards
-                          </span>
-                        </div>
-                      )}
+                          );
+                        })}
+                      </div>
                     </motion.div>
                   );
                 })}
