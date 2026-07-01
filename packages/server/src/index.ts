@@ -929,6 +929,7 @@ async function checkAndTriggerBotTurn(lobbyCode: string) {
 
         currentLobby.gameState.currentPlayerIndex = (currentLobby.gameState.currentPlayerIndex + 1) % 4;
 
+        console.log(`[BOT MOVE EXECUTED] Player: ${currentPlayer.id}, Action: ${playAction}, Card: ${selectedCard.rank}${selectedCard.suit}, Targets: [${targetCards.map(c => c.rank + c.suit).join(', ')}], House Value: ${houseValue || 'none'}`);
         await logMove(pool, lobbyCode, currentPlayer.id, playAction, selectedCard, targetCards, houseValue);
         await saveLobby(currentLobby);
 
@@ -1834,6 +1835,7 @@ io.on('connection', (socket: Socket) => {
       let isValidCapture = true;
       let matchingHouses: House[] = [];
       let nonMatchingHouses: House[] = [];
+      let validationFailureReason = '';
 
       if (actionType === 'CAPTURE') {
         const cardValue = getCardNumericValue(card);
@@ -1843,12 +1845,15 @@ io.on('connection', (socket: Socket) => {
         if (targetCards && targetCards.length > 0) {
           if (!canSumTo(cardValue, targetCards)) {
             isValidCapture = false;
+            validationFailureReason = 'Target floor cards do not sum to played card value';
           }
         } else if (matchingHouses.length === 0) {
           isValidCapture = false;
+          validationFailureReason = 'No matching houses on floor and no target floor cards selected';
         }
 
         if (!isValidCapture) {
+          console.warn(`[VALIDATION FAILED] CAPTURE by ${playerId} with card ${card.rank}${card.suit} failed: ${validationFailureReason}. Falling back to THROW.`);
           actionType = 'THROW';
           targetCards = [];
         }
@@ -1862,10 +1867,12 @@ io.on('connection', (socket: Socket) => {
       if (actionType === 'BUILD_HOUSE') {
         if (!houseValue || houseValue < 9 || houseValue > 13) {
           isValidBuild = false;
+          validationFailureReason = `Invalid house value: ${houseValue}`;
         } else {
           const remainingHand = hand.filter(c => c.id !== card.id);
           if (!remainingHand.some(c => getCardNumericValue(c) === houseValue)) {
             isValidBuild = false;
+            validationFailureReason = `Player does not hold matching card value ${houseValue} in hand after play`;
           } else {
             targetedHouseIndex = lobby.gameState.houses.findIndex(h => 
               h.cards.some(hc => (targetCards || []).some(tc => tc.id === hc.id))
@@ -1874,9 +1881,11 @@ io.on('connection', (socket: Socket) => {
             if (targetedHouseIndex === -1) {
               if (lobby.gameState.houses.length >= 2) {
                 isValidBuild = false;
+                validationFailureReason = 'Cannot build new house: floor already has 2 active houses';
               } else {
                 if (!canPartitionIntoValue([card, ...(targetCards || [])], houseValue)) {
                   isValidBuild = false;
+                  validationFailureReason = `Card stack cannot be grouped into layers summing to ${houseValue}`;
                 }
               }
             } else {
@@ -1886,8 +1895,10 @@ io.on('connection', (socket: Socket) => {
               if (isDistortion) {
                 if (targetedHouseObj.isPukta || targetedHouseObj.value === 13) {
                   isValidBuild = false;
+                  validationFailureReason = `Cannot distort cemented (Pukta) house or a house of value 13`;
                 } else if (houseValue <= targetedHouseObj.value) {
                   isValidBuild = false;
+                  validationFailureReason = `Can only distort to a higher value (target: ${houseValue}, current: ${targetedHouseObj.value})`;
                 } else {
                   const creatorIndex = lobby.players.findIndex(p => p.id === targetedHouseObj.createdBy);
                   const playerIndex = lobby.players.findIndex(p => p.id === playerId);
@@ -1896,10 +1907,12 @@ io.on('connection', (socket: Socket) => {
 
                   if (creatorTeam === playerTeam) {
                     isValidBuild = false;
+                    validationFailureReason = 'You cannot distort a house built by your own team';
                   } else {
                     const extraTargetCards = (targetCards || []).filter(tc => !targetedHouseObj.cards.some(hc => hc.id === tc.id));
                     if (!canPartitionIntoValue([...targetedHouseObj.cards, card, ...extraTargetCards], houseValue)) {
                       isValidBuild = false;
+                      validationFailureReason = `Final distorted cards do not sum into layers of ${houseValue}`;
                     }
                   }
                 }
@@ -1915,10 +1928,12 @@ io.on('connection', (socket: Socket) => {
 
                 if (!bothTeamsContributed && creatorTeam && creatorTeam !== playerTeam) {
                   isValidBuild = false;
+                  validationFailureReason = 'Cannot contribute to opponent\'s house without distorting it';
                 } else {
                   const extraTargetCards = (targetCards || []).filter(tc => !targetedHouseObj.cards.some(hc => hc.id === tc.id));
                   if (!canPartitionIntoValue([card, ...extraTargetCards], houseValue)) {
                     isValidBuild = false;
+                    validationFailureReason = `New cards cannot be grouped into layers of value ${houseValue}`;
                   }
                 }
               }
@@ -1927,6 +1942,7 @@ io.on('connection', (socket: Socket) => {
         }
 
         if (!isValidBuild) {
+          console.warn(`[VALIDATION FAILED] BUILD_HOUSE by ${playerId} for value ${houseValue} failed: ${validationFailureReason}. Falling back to THROW.`);
           actionType = 'THROW';
           targetCards = [];
         }
@@ -2087,6 +2103,8 @@ io.on('connection', (socket: Socket) => {
           username = userRes.rows[0].username;
         }
       }
+      console.log(`[MOVE EXECUTED] Player: ${playerId} (${username}), Original: ${action}, Executed: ${actionType}, Card: ${card.rank}${card.suit}, Targets: [${targetCards.map(c => c.rank + c.suit).join(', ')}], House Value: ${houseValue || 'none'}`);
+
       io.to(lobbyCode).emit('move-executed', {
         playerId,
         username,
