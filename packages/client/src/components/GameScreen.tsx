@@ -121,6 +121,7 @@ export default function GameScreen({
   const [showGuide, setShowGuide] = useState(false); // Rules hidden by default
   const [lastMoveVisual, setLastMoveVisual] = useState<any | null>(null);
   const [houseActionPrompt, setHouseActionPrompt] = useState<{ card: Card; house: House; floorCards: Card[] } | null>(null);
+  const [adminShowHouseCards, setAdminShowHouseCards] = useState(true);
 
   const playersRef = useRef(gameState?.players);
   useEffect(() => {
@@ -530,7 +531,26 @@ export default function GameScreen({
                 {role} • Team {(gameState?.players.find(p => p.id === userId)?.team) || 1}
               </p>
             </div>
-            <div className="divider-gold opacity-20 my-2" />
+             <div className="divider-gold opacity-20 my-2" />
+            {role === 'admin' && (
+              <>
+                <div className="text-[10px] uppercase tracking-wider font-bold text-gold-gradient mb-2">Admin Panel</div>
+                <div className="flex items-center justify-between mb-3 text-xs text-gray-300">
+                  <span>Reveal House Cards</span>
+                  <button
+                    onClick={() => setAdminShowHouseCards(!adminShowHouseCards)}
+                    className={`px-3 py-1 rounded-md text-[10px] font-bold uppercase transition-all cursor-pointer ${
+                      adminShowHouseCards 
+                        ? 'bg-gold text-emerald-950 border border-gold' 
+                        : 'bg-black/40 text-gray-400 border border-gray-700'
+                    }`}
+                  >
+                    {adminShowHouseCards ? 'ON' : 'OFF'}
+                  </button>
+                </div>
+                <div className="divider-gold opacity-20 my-2" />
+              </>
+            )}
             <button
               onClick={onLeaveGame}
               className="w-full text-left py-1.5 text-xs text-rose-400 hover:text-rose-300 font-semibold"
@@ -746,24 +766,33 @@ export default function GameScreen({
                       </div>
 
                       {/* Stack of Cards grouped together */}
-                      <div className="flex gap-2 items-start justify-center mt-2.5 min-h-[96px] px-2">
-                        {groups.map((group, gIdx) => (
-                          <div key={gIdx} className="flex flex-col items-center">
-                            {group.map((c, cIdx) => (
-                              <div
-                                key={c.id}
-                                style={{
-                                  marginTop: cIdx > 0 ? '-28px' : '0px',
-                                  zIndex: cIdx,
-                                  position: 'relative',
-                                }}
-                              >
-                                <PlayingCard card={c} size="sm" />
-                              </div>
-                            ))}
-                          </div>
-                        ))}
-                      </div>
+                      {role === 'admin' && adminShowHouseCards ? (
+                        <div className="flex gap-2 items-start justify-center mt-2.5 min-h-[96px] px-2">
+                          {groups.map((group, gIdx) => (
+                            <div key={gIdx} className="flex flex-col items-center">
+                              {group.map((c, cIdx) => (
+                                <div
+                                  key={c.id}
+                                  style={{
+                                    marginTop: cIdx > 0 ? '-28px' : '0px',
+                                    zIndex: cIdx,
+                                    position: 'relative',
+                                  }}
+                                >
+                                  <PlayingCard card={c} size="sm" />
+                                </div>
+                              ))}
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="flex flex-col items-center justify-center mt-2.5 min-h-[96px] px-4 py-2 border border-emerald-800/10 rounded-lg bg-black/40">
+                          <span className="text-[20px] mb-1">🃏</span>
+                          <span className="text-[10px] text-gray-400 tracking-wide font-display">
+                            {house.cards.length} Cards
+                          </span>
+                        </div>
+                      )}
                     </motion.div>
                   );
                 })}
