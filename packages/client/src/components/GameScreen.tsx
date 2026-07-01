@@ -194,7 +194,15 @@ export default function GameScreen({
   const [showProfile, setShowProfile] = useState(false);
   const [showGuide, setShowGuide] = useState(false); // Rules hidden by default
   const [lastMoveVisual, setLastMoveVisual] = useState<any | null>(null);
-  const [houseActionPrompt, setHouseActionPrompt] = useState<{ card: Card; house: House; floorCards: Card[] } | null>(null);
+  const [actionPrompt, setActionPrompt] = useState<{
+    title: string;
+    eatLabel: string;
+    buildLabel: string;
+    canEat: boolean;
+    canBuild: boolean;
+    onEat: () => void;
+    onBuild: () => void;
+  } | null>(null);
   const [adminShowHouseCards, setAdminShowHouseCards] = useState(true);
   const [houseDetailModal, setHouseDetailModal] = useState<House | null>(null);
 
@@ -355,11 +363,27 @@ export default function GameScreen({
     setHand(prev => prev.filter(c => c.id !== playedCard.id));
     setSelectedCard(null);
     setCapturedCards([]);
-    setHouseActionPrompt(null);
+    setActionPrompt(null);
   };
 
-  const executeHouseAction = (playedCard: Card, targetHouse: House, floorCards: Card[]) => {
-    setHouseActionPrompt({ card: playedCard, house: targetHouse, floorCards });
+  const openHouseActionPrompt = (playedCard: Card, targetHouse: House, floorCards: Card[]) => {
+    const contributeEligible = canContributeToHouse(
+      playedCard,
+      targetHouse,
+      floorCards,
+      gameState?.players || [],
+      userId,
+      hand
+    );
+    setActionPrompt({
+      title: `House ${targetHouse.value}`,
+      eatLabel: 'Eat (Capture) House',
+      buildLabel: 'Contribute / Distort',
+      canEat: true,
+      canBuild: contributeEligible,
+      onEat: () => performHouseAction('CAPTURE', playedCard, targetHouse, floorCards),
+      onBuild: () => performHouseAction('CONTRIBUTE', playedCard, targetHouse, floorCards),
+    });
   };
 
   // Drag and Drop handlers — cap house sum at 13
@@ -374,16 +398,33 @@ export default function GameScreen({
     const playedCard = hand.find(c => c.id === cardId);
     if (!playedCard || !lobbyCode) return;
 
-    const playedVal = getCardValue(playedCard);
-    const targetVal = getCardValue(targetCard);
-    const sum = playedVal + targetVal;
+    const { canEat, canBuild, sum } = computeFloorDropEligibility(playedCard, targetCard, hand);
 
-    if (playedVal === targetVal) {
+    const doEat = () => {
       socket.emit('game-action', { lobbyCode, action: 'CAPTURE', payload: { card: playedCard, targetCards: [targetCard] } });
       setHand(prev => prev.filter(c => c.id !== playedCard.id));
-    } else if (sum >= 9 && sum <= 13) {
+      setActionPrompt(null);
+    };
+    const doBuild = () => {
       socket.emit('game-action', { lobbyCode, action: 'BUILD_HOUSE', payload: { card: playedCard, targetCards: [targetCard], houseValue: sum } });
       setHand(prev => prev.filter(c => c.id !== playedCard.id));
+      setActionPrompt(null);
+    };
+
+    if (canEat && canBuild) {
+      setActionPrompt({
+        title: `${playedCard.rank}${suitSymbol(playedCard.suit)} on ${targetCard.rank}${suitSymbol(targetCard.suit)}`,
+        eatLabel: 'Eat (Capture)',
+        buildLabel: `Build House of ${sum}`,
+        canEat: true,
+        canBuild: true,
+        onEat: doEat,
+        onBuild: doBuild,
+      });
+    } else if (canEat) {
+      doEat();
+    } else if (canBuild) {
+      doBuild();
     } else {
       socket.emit('game-action', { lobbyCode, action: 'THROW', payload: { card: playedCard, targetCards: [] } });
       setHand(prev => prev.filter(c => c.id !== playedCard.id));
@@ -397,7 +438,7 @@ export default function GameScreen({
     const playedCard = hand.find(c => c.id === cardId);
     if (!playedCard || !lobbyCode) return;
 
-    executeHouseAction(playedCard, targetHouse, capturedCards);
+    openHouseActionPrompt(playedCard, targetHouse, capturedCards);
   };
 
   const handleDropOnBoard = (e: React.DragEvent) => {
@@ -435,7 +476,7 @@ export default function GameScreen({
 
   const handleHouseClick = (house: House) => {
     if (!selectedCard || !lobbyCode) return;
-    executeHouseAction(selectedCard, house, capturedCards);
+    openHouseActionPrompt(selectedCard, house, capturedCards);
   };
 
   const handleCapture = () => {
@@ -1168,11 +1209,11 @@ export default function GameScreen({
         )}
       </AnimatePresence>
 
-      {/* ─── EAT vs CONTRIBUTE CHOOSE PROMPT ─── */}
+      {/* ─── EAT vs BUILD/CONTRIBUTE CHOOSE PROMPT ─── */}
       <AnimatePresence>
-        {houseActionPrompt && (
+        {actionPrompt && (
           <motion.div
-            key="house-action-prompt"
+            key="action-prompt"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
@@ -1186,29 +1227,37 @@ export default function GameScreen({
               style={{ background: 'rgba(9,22,12,0.98)' }}
             >
               <h3 className="text-lg font-display font-bold text-gold-gradient mb-2">
-                House Action Decision
+                {actionPrompt.title}
               </h3>
               <p className="text-xs text-gray-300 mb-6 font-display">
-                Would you like to Eat (Capture) House {houseActionPrompt.house.value} or Contribute to it?
+                What would you like to do?
               </p>
 
               <div className="flex flex-col gap-3 w-full">
                 <button
-                  onClick={() => performHouseAction('CAPTURE', houseActionPrompt.card, houseActionPrompt.house, houseActionPrompt.floorCards)}
-                  className="w-full py-3 rounded-xl text-xs font-bold font-display uppercase tracking-widest btn-gold shadow-lg cursor-pointer"
+                  onClick={actionPrompt.canEat ? actionPrompt.onEat : undefined}
+                  disabled={!actionPrompt.canEat}
+                  className={`w-full py-3 rounded-xl text-xs font-bold font-display uppercase tracking-widest shadow-lg transition-all ${
+                    actionPrompt.canEat ? 'btn-gold cursor-pointer' : 'bg-black/30 text-gray-500 border border-gray-800 cursor-not-allowed'
+                  }`}
                 >
-                  🍽️ Eat (Capture) House
+                  🍽️ {actionPrompt.eatLabel}
                 </button>
 
                 <button
-                  onClick={() => performHouseAction('CONTRIBUTE', houseActionPrompt.card, houseActionPrompt.house, houseActionPrompt.floorCards)}
-                  className="w-full py-3 rounded-xl text-xs font-bold font-display uppercase tracking-widest text-emerald-100 bg-emerald-950/50 border border-emerald-800/40 hover:border-emerald-600 transition-all cursor-pointer"
+                  onClick={actionPrompt.canBuild ? actionPrompt.onBuild : undefined}
+                  disabled={!actionPrompt.canBuild}
+                  className={`w-full py-3 rounded-xl text-xs font-bold font-display uppercase tracking-widest transition-all ${
+                    actionPrompt.canBuild
+                      ? 'text-emerald-100 bg-emerald-950/50 border border-emerald-800/40 hover:border-emerald-600 cursor-pointer'
+                      : 'bg-black/30 text-gray-500 border border-gray-800 cursor-not-allowed'
+                  }`}
                 >
-                  ➕ Contribute / Distort
+                  ➕ {actionPrompt.buildLabel}
                 </button>
 
                 <button
-                  onClick={() => setHouseActionPrompt(null)}
+                  onClick={() => setActionPrompt(null)}
                   className="w-full py-2.5 rounded-xl text-xs text-gray-400 hover:text-gray-200 transition-all bg-transparent border-0 mt-2 cursor-pointer"
                 >
                   Cancel
