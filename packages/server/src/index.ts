@@ -1512,10 +1512,12 @@ io.on('connection', (socket: Socket) => {
         io.to(lobbyCode).emit('game-started', { lobbyCode });
         io.to(lobbyCode).emit('game-state', redactGameStateForBroadcast(lobby.gameState));
 
-        // Automatically proceed to bidding after 5 seconds to show toss deals in UI
+        // Automatically proceed to bidding once the toss animation finishes on the client
+        // (900ms/card deal pace, matching TossPhase.tsx, plus a hold on the winner banner)
+        const tossAnimationMs = tossHistory.length * 900 + 2500;
         setTimeout(async () => {
           await proceedToBidding(lobbyCode);
-        }, 5000);
+        }, tossAnimationMs);
 
       } else {
         await client.query('ROLLBACK');

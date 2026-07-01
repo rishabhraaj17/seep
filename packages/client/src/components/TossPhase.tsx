@@ -33,7 +33,7 @@ export default function TossPhase({ gameState, userId }: TossPhaseProps) {
       } else {
         clearInterval(interval);
       }
-    }, 600);
+    }, 900);
 
     return () => clearInterval(interval);
   }, [tossHistory]);
@@ -112,20 +112,40 @@ export default function TossPhase({ gameState, userId }: TossPhaseProps) {
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
           {playersBySeat.map(player => {
             const isMe = player.id === userId;
+            const isWinner = currentWinner === player.id;
             return (
-              <div key={player.id} className="p-4 rounded-xl border flex flex-col items-center"
-                style={isMe
+              <motion.div
+                key={player.id}
+                className="p-4 rounded-xl border flex flex-col items-center"
+                animate={isWinner
+                  ? { scale: [1, 1.04, 1], boxShadow: ['0 0 0px rgba(212,175,55,0)', '0 0 20px rgba(212,175,55,0.6)', '0 0 0px rgba(212,175,55,0)'] }
+                  : {}}
+                transition={isWinner ? { duration: 1.4, repeat: Infinity, ease: 'easeInOut' } : {}}
+                style={isWinner
+                  ? { background: 'rgba(212,175,55,0.12)', border: '1px solid #d4af37' }
+                  : isMe
                   ? { background: 'rgba(212,175,55,0.05)', border: '1px solid rgba(212,175,55,0.25)' }
                   : { background: 'rgba(0,0,0,0.3)', border: '1px solid rgba(212,175,55,0.08)' }}>
-                <span className={`text-xs font-bold mb-3 ${isMe ? 'text-gold-gradient' : 'text-emerald-400'}`}>
-                  Seat {player.seat} ({isMe ? 'You' : seatLabel(player.seat)})
+                <span className={`text-xs font-bold mb-3 ${isWinner ? 'text-gold-gradient' : isMe ? 'text-gold-gradient' : 'text-emerald-400'}`}>
+                  {isWinner ? '👑 ' : ''}Seat {player.seat} ({isMe ? 'You' : seatLabel(player.seat)})
                 </span>
                 <div className="flex gap-1 flex-wrap justify-center min-h-[120px] items-center">
-                  {cardsByPlayer[player.id]?.map(c => (
-                    <PlayingCard key={c.id} card={c} size="sm" />
-                  ))}
+                  {cardsByPlayer[player.id]?.map(c => {
+                    const isWinningCard = isWinner && c.rank === 'J';
+                    return isWinningCard ? (
+                      <motion.div
+                        key={c.id}
+                        animate={{ scale: [1, 1.12, 1], filter: ['drop-shadow(0 0 0px #d4af37)', 'drop-shadow(0 0 12px #d4af37)', 'drop-shadow(0 0 0px #d4af37)'] }}
+                        transition={{ duration: 1.4, repeat: Infinity, ease: 'easeInOut' }}
+                      >
+                        <PlayingCard card={c} size="sm" />
+                      </motion.div>
+                    ) : (
+                      <PlayingCard key={c.id} card={c} size="sm" />
+                    );
+                  })}
                 </div>
-              </div>
+              </motion.div>
             );
           })}
         </div>
