@@ -5,6 +5,7 @@ interface PlayingCardProps {
   card: Card & { faceDown?: boolean };
   onClick?: () => void;
   isSelected?: boolean;
+  selectedVariant?: 'gold' | 'teal';
   size?: 'sm' | 'md' | 'lg';
   className?: string;
 }
@@ -22,9 +23,10 @@ const sizeConfig = {
   lg: { outer: 'w-16 h-24 sm:w-20 sm:h-28', rank: 'text-sm sm:text-base', suit: 'text-xl sm:text-2xl', padding: 'p-2 sm:p-2.5' },
 };
 
-export default function PlayingCard({ card, onClick, isSelected, size = 'md', className = '' }: PlayingCardProps) {
+export default function PlayingCard({ card, onClick, isSelected, selectedVariant = 'gold', size = 'md', className = '' }: PlayingCardProps) {
   const sc = sizeConfig[size];
   const suit = suitConfig[card.suit] ?? { color: '#000', symbol: '?', isRed: false };
+  const isTeal = selectedVariant === 'teal';
 
   /* ─── Face down ─── */
   if (card.faceDown) {
@@ -65,13 +67,15 @@ export default function PlayingCard({ card, onClick, isSelected, size = 'md', cl
       className={`${sc.outer} rounded-lg flex-shrink-0 select-none relative overflow-hidden touch-target ${onClick ? 'cursor-pointer' : ''} ${className}`}
       style={{
         background: isSelected
-          ? 'linear-gradient(135deg, #fffdf5 0%, #fff9e6 100%)'
+          ? (isTeal ? 'linear-gradient(135deg, #f5fffb 0%, #e6fff6 100%)' : 'linear-gradient(135deg, #fffdf5 0%, #fff9e6 100%)')
           : 'linear-gradient(135deg, #ffffff 0%, #f8f6f0 100%)',
         border: isSelected
-          ? '2px solid #d4af37'
+          ? (isTeal ? '2px solid #1abc9c' : '2px solid #d4af37')
           : '1.5px solid rgba(0,0,0,0.15)',
         boxShadow: isSelected
-          ? '0 0 0 3px rgba(212,175,55,0.3), 0 8px 20px rgba(0,0,0,0.5), 0 0 20px rgba(212,175,55,0.2)'
+          ? (isTeal
+            ? '0 0 0 3px rgba(22,160,133,0.3), 0 8px 20px rgba(0,0,0,0.5), 0 0 20px rgba(22,160,133,0.25)'
+            : '0 0 0 3px rgba(212,175,55,0.3), 0 8px 20px rgba(0,0,0,0.5), 0 0 20px rgba(212,175,55,0.2)')
           : '0 2px 8px rgba(0,0,0,0.5), 0 1px 3px rgba(0,0,0,0.3)',
         transform: isSelected ? 'translateY(-6px)' : undefined,
         transition: 'transform 0.15s ease, box-shadow 0.15s ease',
@@ -128,7 +132,7 @@ export default function PlayingCard({ card, onClick, isSelected, size = 'md', cl
       {/* Selected glow overlay */}
       {isSelected && (
         <div className="absolute inset-0 rounded-lg pointer-events-none"
-          style={{ boxShadow: 'inset 0 0 12px rgba(212,175,55,0.15)' }} />
+          style={{ boxShadow: `inset 0 0 12px rgba(${isTeal ? '22,160,133' : '212,175,55'},0.15)` }} />
       )}
     </motion.div>
   );

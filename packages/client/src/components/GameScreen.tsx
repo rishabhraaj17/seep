@@ -182,8 +182,8 @@ export default function GameScreen({
       setIsBidding(true);
     });
 
-    socket.on('deal-cards', ({ lobbyCode: code, floor, hand: myHand, biddingPlayerIndex }: {
-      lobbyCode: string; floor: Card[]; hand: Card[]; playerIndex: number; biddingPlayerIndex: number;
+    socket.on('deal-cards', ({ lobbyCode: code, floor, hand: myHand, biddingPlayerIndex, gamePhase }: {
+      lobbyCode: string; floor: Card[]; hand: Card[]; playerIndex: number; biddingPlayerIndex: number; gamePhase?: GameState['gamePhase'];
     }) => {
       setLobbyCode(code);
       setHand(myHand);
@@ -193,14 +193,14 @@ export default function GameScreen({
           lobbyCode: code, floor, houses: [],
           currentPlayerIndex: biddingPlayerIndex, roundNumber: 1,
           teamScores: { team1: 0, team2: 0 }, capturedCards: { team1: [], team2: [] },
-          seepCount: { team1: 0, team2: 0 }, gamePhase: 'bidding',
+          seepCount: { team1: 0, team2: 0 }, gamePhase: gamePhase || 'bidding',
           firstTurnCompleted: [],
           handSizes: {},
           players: [],
           deck: [],
         };
       });
-      setIsBidding(true);
+      setIsBidding(gamePhase !== 'toss');
     });
 
     socket.on('game-state', (state: GameState) => {
@@ -832,7 +832,7 @@ export default function GameScreen({
                       <div className={`absolute -top-3 px-2 py-0.5 rounded-full text-[9px] font-bold shadow ${
                         house.isPukta ? 'bg-gold-gradient text-emerald-950 border border-gold' : 'bg-emerald-900 border border-emerald-700 text-emerald-100'
                       }`}>
-                        {house.isPukta ? '🏆' : '🏠'} House {house.value}
+                        House {house.value}
                       </div>
 
                       {/* Contributor team badge(s) */}
@@ -931,10 +931,16 @@ export default function GameScreen({
                       </span>
                     </span>
                     {capturedCards.length > 0 && (
-                      <span className="px-2 py-0.5 rounded-full text-xs font-semibold"
-                         style={{ background: 'rgba(22,160,133,0.2)', border: '1px solid rgba(22,160,133,0.4)', color: '#1abc9c' }}>
-                        Can capture {capturedCards.length}
-                      </span>
+                      <>
+                        <span className="px-2 py-0.5 rounded-full text-xs font-semibold"
+                           style={{ background: 'rgba(22,160,133,0.2)', border: '1px solid rgba(22,160,133,0.4)', color: '#1abc9c' }}>
+                          Can capture {capturedCards.length}
+                        </span>
+                        <span className="px-2 py-0.5 rounded-full text-xs font-semibold"
+                           style={{ background: 'rgba(22,160,133,0.2)', border: '1px solid rgba(22,160,133,0.4)', color: '#1abc9c' }}>
+                          Floor sum: {capturedCards.reduce((s, c) => s + getCardValue(c), 0)}
+                        </span>
+                      </>
                     )}
                   </div>
                   <button
@@ -973,20 +979,27 @@ export default function GameScreen({
                   <div className="flex items-center gap-2 justify-center border-t sm:border-t-0 sm:border-l border-emerald-800/20 pt-3 sm:pt-0 sm:pl-4">
                     <span className="text-xs text-gray-400">House Value:</span>
                     <div className="flex gap-1.5">
-                      {[9, 10, 11, 12, 13].map(v => (
-                        <motion.button
-                          key={v}
-                          whileTap={{ scale: 0.88 }}
-                          onClick={() => setHouseValue(v as any)}
-                          className={`w-8 h-8 rounded-lg text-xs font-bold transition-all ${
-                            houseValue === v
-                              ? 'bg-gold text-emerald-950 font-bold shadow'
-                              : 'bg-black/30 text-gray-400 border border-emerald-800/30 hover:border-gold/30'
-                          }`}
-                        >
-                          {v}
-                        </motion.button>
-                      ))}
+                      {[9, 10, 11, 12, 13].map(v => {
+                        const floorSum = capturedCards.reduce((s, c) => s + getCardValue(c), 0);
+                        const reachable = capturedCards.length === 0 || getCardValue(selectedCard) + floorSum === v;
+                        return (
+                          <motion.button
+                            key={v}
+                            whileTap={reachable ? { scale: 0.88 } : undefined}
+                            onClick={() => reachable && setHouseValue(v as any)}
+                            disabled={!reachable}
+                            className={`w-8 h-8 rounded-lg text-xs font-bold transition-all ${
+                              houseValue === v
+                                ? 'bg-gold text-emerald-950 font-bold shadow'
+                                : reachable
+                                ? 'bg-black/30 text-gray-400 border border-emerald-800/30 hover:border-gold/30'
+                                : 'bg-black/20 text-gray-600 border border-gray-800 cursor-not-allowed'
+                            }`}
+                          >
+                            {v}
+                          </motion.button>
+                        );
+                      })}
                     </div>
 
                     <motion.button

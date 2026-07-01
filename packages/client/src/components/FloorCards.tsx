@@ -26,6 +26,7 @@ export default function FloorCards({ cards, highlightedIds = [], onCardClick, on
             card={card}
             size="lg"
             isSelected={highlightedIds.includes(card.id)}
+            selectedVariant="teal"
             onClick={onCardClick ? () => onCardClick(card) : undefined}
           />
         </motion.div>

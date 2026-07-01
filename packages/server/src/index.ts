@@ -200,6 +200,7 @@ function dealRemainingCardsIfFirstTurn(lobby: LobbyState, playerId: string, play
           hand: updatedHand,
           playerIndex,
           biddingPlayerIndex: 0,
+          gamePhase: lobby.gameState!.gamePhase,
         });
       }
     } else {
@@ -211,6 +212,7 @@ function dealRemainingCardsIfFirstTurn(lobby: LobbyState, playerId: string, play
           hand: lobby.hands!.get(playerId) || [],
           playerIndex,
           biddingPlayerIndex: 0,
+          gamePhase: lobby.gameState!.gamePhase,
         });
       }
     }
@@ -615,6 +617,7 @@ async function startNextRound(lobbyCode: string, dealerPlayerIndex: number) {
         hand: i === 0 ? hand0.slice(0, 4) : (i === 3 ? hand3 : [hand0, hand1, hand2][i]),
         playerIndex: i,
         biddingPlayerIndex: 0,
+        gamePhase: lobby.gameState!.gamePhase,
       });
     });
 
@@ -1033,6 +1036,7 @@ async function proceedToBidding(lobbyCode: string) {
         hand: visibleHand,
         playerIndex: i,
         biddingPlayerIndex: 0,
+        gamePhase: gameState.gamePhase,
       });
     });
 
@@ -1394,6 +1398,7 @@ io.on('connection', (socket: Socket) => {
         hand: visibleHand,
         playerIndex,
         biddingPlayerIndex: 0,
+        gamePhase: lobby.gameState.gamePhase,
       });
 
       socket.emit('game-state', redactGameStateForBroadcast(lobby.gameState));
@@ -1670,6 +1675,7 @@ io.on('connection', (socket: Socket) => {
             hand: updatedHand.slice(0, 4),
             playerIndex: 0,
             biddingPlayerIndex: 0,
+            gamePhase: lobby.gameState.gamePhase,
           });
 
           io.to(lobbyCode).emit('game-state', redactGameStateForBroadcast(lobby.gameState));
@@ -1714,6 +1720,7 @@ io.on('connection', (socket: Socket) => {
             hand: updatedHand.slice(0, 4),
             playerIndex: 0,
             biddingPlayerIndex: 0,
+            gamePhase: lobby.gameState.gamePhase,
           });
 
           io.to(lobbyCode).emit('game-state', redactGameStateForBroadcast(lobby.gameState));
