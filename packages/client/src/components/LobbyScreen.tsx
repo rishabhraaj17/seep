@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Socket } from 'socket.io-client';
 import { motion, AnimatePresence } from 'motion/react';
+import ThemeToggle from './ThemeToggle';
 
 interface LobbyScreenProps {
   socket: Socket;
@@ -248,11 +249,6 @@ export default function LobbyScreen({
     }
   };
 
-  const changeSelfRole = async (newRole: string) => {
-    await changeUserRole(username, newRole);
-    setShowProfile(false);
-  };
-
   return (
     <div className="relative min-h-screen w-full flex items-center justify-center p-4 overflow-hidden felt-bg">
       {/* Background orbs */}
@@ -280,7 +276,7 @@ export default function LobbyScreen({
                 <h1 className="font-display text-2xl sm:text-3xl font-bold text-gold-gradient tracking-wide">
                   SEEP CARD TABLE
                 </h1>
-                <p className="text-xs mt-0.5" style={{ color: 'rgba(245,240,232,0.4)' }}>
+                <p className="text-xs mt-0.5" style={{ color: 'rgba(var(--text-rgb),0.4)' }}>
                   {inLobby ? `Lobby: ${lobbyCode} · ${players.length}/4` : 'Create or join a card table'}
                 </p>
               </div>
@@ -341,17 +337,9 @@ export default function LobbyScreen({
                               {role}
                             </div>
                           </div>
-                          <div>
-                            <span className="text-gray-400">Switch Role (Dev Testing):</span>
-                            <select
-                              value={role}
-                              onChange={(e) => changeSelfRole(e.target.value)}
-                              className="w-full mt-1.5 px-2 py-1.5 rounded bg-black/50 border border-gold-500/30 text-white outline-none"
-                            >
-                              <option value="player">Player</option>
-                              <option value="admin">Admin</option>
-                              <option value="spectator">Spectator</option>
-                            </select>
+                          <div className="flex items-center justify-between">
+                            <span className="text-gray-400">Theme:</span>
+                            <ThemeToggle />
                           </div>
                         </div>
 
@@ -521,9 +509,9 @@ export default function LobbyScreen({
                       >
                         {isPrivate && <span className="text-[10px] font-bold">✓</span>}
                       </div>
-                      <span className="text-sm group-hover:text-white transition-colors" style={{ color: 'rgba(245,240,232,0.7)' }}>
+                      <span className="text-sm group-hover:text-white transition-colors" style={{ color: 'rgba(var(--text-rgb),0.7)' }}>
                         Private Room
-                        <span className="ml-2 text-xs" style={{ color: 'rgba(245,240,232,0.35)' }}>(invite only)</span>
+                        <span className="ml-2 text-xs" style={{ color: 'rgba(var(--text-rgb),0.35)' }}>(invite only)</span>
                       </span>
                     </label>
                     <motion.button
@@ -741,15 +729,15 @@ export default function LobbyScreen({
                                 }}
                               >
                                 {player ? (isMe ? '⭐' : (isBot ? '🤖' : player.charAt(0).toUpperCase())) : (
-                                  <span className="animate-pulse" style={{ color: 'rgba(245,240,232,0.2)' }}>?</span>
+                                  <span className="animate-pulse" style={{ color: 'rgba(var(--text-rgb),0.2)' }}>?</span>
                                 )}
                               </div>
                               <div>
-                                <div className="text-sm font-semibold truncate max-w-[120px]" style={{ color: player ? (isMe ? '#d4af37' : '#f5f0e8') : 'rgba(245,240,232,0.2)' }}>
+                                <div className="text-sm font-semibold truncate max-w-[120px]" style={{ color: player ? (isMe ? '#d4af37' : '#f5f0e8') : 'rgba(var(--text-rgb),0.2)' }}>
                                   {player ? (isMe ? 'You' : player) : 'Waiting...'}
                                 </div>
                                 <div className="text-xs mt-0.5 flex items-center gap-1">
-                                  <span style={{ color: 'rgba(245,240,232,0.35)' }}>Seat {i + 1} ·</span>
+                                  <span style={{ color: 'rgba(var(--text-rgb),0.35)' }}>Seat {i + 1} ·</span>
                                   {player && <span className="font-semibold text-[10px]" style={{ color: teamColor }}>{teamLabel}</span>}
                                 </div>
                               </div>
@@ -772,7 +760,7 @@ export default function LobbyScreen({
                         transition={{ duration: 0.5 }}
                       />
                     </div>
-                    <div className="text-xs mt-2 text-center" style={{ color: 'rgba(245,240,232,0.35)' }}>
+                    <div className="text-xs mt-2 text-center" style={{ color: 'rgba(var(--text-rgb),0.35)' }}>
                       {players.length === 4 ? '✓ All players ready!' : `${4 - players.length} more player${4 - players.length !== 1 ? 's' : ''} needed`}
                     </div>
                   </div>
@@ -786,18 +774,18 @@ export default function LobbyScreen({
                       className={`w-full py-4 rounded-xl text-sm tracking-widest uppercase font-display font-bold transition-all cursor-pointer ${
                         players.length === 4 ? 'btn-gold animate-glow-pulse' : 'cursor-not-allowed'
                       }`}
-                      style={players.length < 4 ? { background: 'rgba(0,0,0,0.3)', border: '1px solid rgba(212,175,55,0.15)', color: 'rgba(245,240,232,0.3)' } : {}}
+                      style={players.length < 4 ? { background: 'rgba(0,0,0,0.3)', border: '1px solid rgba(212,175,55,0.15)', color: 'rgba(var(--text-rgb),0.3)' } : {}}
                     >
                       {players.length === 4 ? '✦ Begin the Game' : `⏳ Waiting for players (${players.length}/4)`}
                     </motion.button>
                   ) : (
-                    <div className="text-center py-4 text-sm" style={{ color: 'rgba(245,240,232,0.4)' }}>
+                    <div className="text-center py-4 text-sm" style={{ color: 'rgba(var(--text-rgb),0.4)' }}>
                       <div className="animate-pulse mb-1">⏳</div>
                       Waiting for the host to start the game...
                     </div>
                   )}
 
-                  <p className="text-center text-xs mt-4" style={{ color: 'rgba(245,240,232,0.25)' }}>
+                  <p className="text-center text-xs mt-4" style={{ color: 'rgba(var(--text-rgb),0.25)' }}>
                     Share code <span className="font-mono font-bold" style={{ color: 'rgba(212,175,55,0.6)' }}>{lobbyCode}</span> with friends
                   </p>
                 </motion.div>

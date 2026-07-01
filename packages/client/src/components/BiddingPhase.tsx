@@ -78,7 +78,7 @@ export default function BiddingPhase({ socket, userId, lobbyCode, hand, floorCar
                 <span className="text-xs font-display tracking-[0.25em] uppercase text-gold-gradient font-bold">Calling Phase</span>
               </div>
               <h1 className="font-display text-2xl sm:text-3xl font-bold text-gold-gradient">Call First Card</h1>
-              <p className="text-sm mt-2" style={{ color: 'rgba(245,240,232,0.4)' }}>
+              <p className="text-sm mt-2" style={{ color: 'rgba(var(--text-rgb),0.4)' }}>
                 Select a value to call. You must hold a matching card (9–K) in your hand to call it.
               </p>
             </div>
@@ -114,7 +114,7 @@ export default function BiddingPhase({ socket, userId, lobbyCode, hand, floorCar
                     <PlayingCard card={card} size="md" />
                   </motion.div>
                 )) : (
-                  <span className="text-sm" style={{ color: 'rgba(245,240,232,0.25)' }}>No floor cards</span>
+                  <span className="text-sm" style={{ color: 'rgba(var(--text-rgb),0.25)' }}>No floor cards</span>
                 )}
               </div>
             </div>
@@ -141,7 +141,7 @@ export default function BiddingPhase({ socket, userId, lobbyCode, hand, floorCar
                     </motion.div>
                   );
                 }) : (
-                  <div className="animate-pulse text-sm" style={{ color: 'rgba(245,240,232,0.3)' }}>
+                  <div className="animate-pulse text-sm" style={{ color: 'rgba(var(--text-rgb),0.3)' }}>
                     Waiting for cards...
                   </div>
                 )}
@@ -176,8 +176,8 @@ export default function BiddingPhase({ socket, userId, lobbyCode, hand, floorCar
                       style={chosen
                         ? { background: 'linear-gradient(135deg, #d4af37, #b8960c)', color: '#0d1f13', boxShadow: '0 0 20px rgba(212,175,55,0.4)', border: '1px solid #f5d78e' }
                         : avail
-                        ? { background: 'rgba(0,0,0,0.4)', border: '1px solid rgba(212,175,55,0.25)', color: 'rgba(245,240,232,0.8)' }
-                        : { background: 'rgba(0,0,0,0.2)', border: '1px solid rgba(212,175,55,0.08)', color: 'rgba(245,240,232,0.2)', cursor: 'not-allowed' }
+                        ? { background: 'rgba(0,0,0,0.4)', border: '1px solid rgba(212,175,55,0.25)', color: 'rgba(var(--text-rgb),0.8)' }
+                        : { background: 'rgba(0,0,0,0.2)', border: '1px solid rgba(212,175,55,0.08)', color: 'rgba(var(--text-rgb),0.2)', cursor: 'not-allowed' }
                       }
                     >
                       {rankLabel[bid]}
@@ -202,7 +202,7 @@ export default function BiddingPhase({ socket, userId, lobbyCode, hand, floorCar
               }
             </motion.button>
 
-            <p className="text-center text-xs mt-3" style={{ color: 'rgba(245,240,232,0.25)' }}>
+            <p className="text-center text-xs mt-3" style={{ color: 'rgba(var(--text-rgb),0.25)' }}>
               Tip: Call buttons are enabled if you hold a card of that value. Declare a call to start the playing rounds.
             </p>
           </div>

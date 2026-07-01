@@ -1,4 +1,5 @@
 version: '3.9'
+name: seep
 
 services:
   # Database
@@ -34,6 +35,8 @@ services:
       - PORT=3000
       - DATABASE_URL=postgres://seep_user:seep_pass@seep-db:5432/seep_db
       - CLIENT_ORIGIN=http://localhost:5273
+      - ADMIN_USERNAME=${ADMIN_USERNAME:-}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
     depends_on:
       seep-db:
         condition: service_healthy
@@ -56,6 +59,20 @@ services:
     depends_on:
       seep-server:
         condition: service_healthy
+
+  # Log viewer — streams container logs (server gameplay/auth events, client, db) in a web UI.
+  # Bound to localhost only; this is an operator tool, not part of the app's own RBAC.
+  dozzle:
+    image: amir20/dozzle:latest
+    container_name: seep-dozzle
+    ports:
+      - "127.0.0.1:8888:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      - DOZZLE_NO_ANALYTICS=true
+      - DOZZLE_FILTER=label=com.docker.compose.project=seep
+    restart: unless-stopped
 
 volumes:
   seep_pgdata:

@@ -34,8 +34,8 @@ export default function FloorCards({ cards, highlightedIds = [], onCardClick, on
       {cards.length === 0 && !hideEmptyMessage && (
         <div className="flex flex-col items-center gap-2 py-6">
           <div className="text-4xl opacity-20 select-none">🃏</div>
-          <p className="text-sm font-display" style={{ color: 'rgba(245,240,232,0.3)' }}>Floor is empty</p>
-          <p className="text-xs" style={{ color: 'rgba(245,240,232,0.2)' }}>Throw a card to begin</p>
+          <p className="text-sm font-display" style={{ color: 'rgba(var(--text-rgb),0.3)' }}>Floor is empty</p>
+          <p className="text-xs" style={{ color: 'rgba(var(--text-rgb),0.2)' }}>Throw a card to begin</p>
         </div>
       )}
     </div>

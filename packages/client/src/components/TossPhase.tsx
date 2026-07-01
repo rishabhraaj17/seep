@@ -47,6 +47,14 @@ export default function TossPhase({ gameState, userId }: TossPhaseProps) {
     cardsByPlayer[deal.playerId].push(deal.card);
   });
 
+  // Seats are always dealt in order 1..4; seat 1 is always "You" post-toss-rotation.
+  const playersBySeat = [...(gameState.players || [])].sort((a, b) => a.seat - b.seat);
+  const seatLabel = (seat: number) => {
+    if (seat === 1) return 'You';
+    if (seat === 3) return 'Partner';
+    return 'Opponent';
+  };
+
   return (
     <div className="relative min-h-screen flex items-center justify-center p-4 overflow-hidden felt-bg">
       {/* Background decoration */}
@@ -84,7 +92,7 @@ export default function TossPhase({ gameState, userId }: TossPhaseProps) {
                 className="px-6 py-2.5 rounded-xl border font-bold text-sm tracking-wide text-center"
                 style={{ background: 'rgba(212,175,55,0.15)', border: '1px solid #d4af37', color: '#f5d78e' }}
               >
-                🏆 {currentWinner === userId ? 'You got the Jack first and won the toss!' : `${currentWinner.startsWith('Bot_') ? currentWinner : 'Your Opponent'} got the Jack and wins the toss!`}
+                🏆 {currentWinner === userId ? 'You got the Jack first and won the toss!' : `${gameState.players?.find(p => p.id === currentWinner)?.username || 'Your Opponent'} got the Jack and wins the toss!`}
               </motion.div>
             ) : (
               <motion.div
@@ -92,7 +100,7 @@ export default function TossPhase({ gameState, userId }: TossPhaseProps) {
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
                 className="text-sm font-semibold animate-pulse"
-                style={{ color: 'rgba(245,240,232,0.6)' }}
+                style={{ color: 'rgba(var(--text-rgb),0.6)' }}
               >
                 Dealing cards... looking for a Jack
               </motion.div>
@@ -102,56 +110,31 @@ export default function TossPhase({ gameState, userId }: TossPhaseProps) {
 
         {/* Players seats layout */}
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
-          {/* Bot 1 / Opponent Left */}
-          <div className="p-4 rounded-xl border flex flex-col items-center"
-            style={{ background: 'rgba(0,0,0,0.3)', border: '1px solid rgba(212,175,55,0.08)' }}>
-            <span className="text-xs font-bold text-emerald-400 mb-3">Seat 2 (Opponent)</span>
-            <div className="flex gap-1 flex-wrap justify-center min-h-[120px] items-center">
-              {cardsByPlayer['Bot_1']?.map(c => (
-                <PlayingCard key={c.id} card={c} size="sm" />
-              ))}
-            </div>
-          </div>
-
-          {/* Bot 2 / Partner */}
-          <div className="p-4 rounded-xl border flex flex-col items-center"
-            style={{ background: 'rgba(0,0,0,0.3)', border: '1px solid rgba(212,175,55,0.08)' }}>
-            <span className="text-xs font-bold text-emerald-400 mb-3">Seat 3 (Partner)</span>
-            <div className="flex gap-1 flex-wrap justify-center min-h-[120px] items-center">
-              {cardsByPlayer['Bot_2']?.map(c => (
-                <PlayingCard key={c.id} card={c} size="sm" />
-              ))}
-            </div>
-          </div>
-
-          {/* Bot 3 / Opponent Right */}
-          <div className="p-4 rounded-xl border flex flex-col items-center"
-            style={{ background: 'rgba(0,0,0,0.3)', border: '1px solid rgba(212,175,55,0.08)' }}>
-            <span className="text-xs font-bold text-emerald-400 mb-3">Seat 4 (Opponent)</span>
-            <div className="flex gap-1 flex-wrap justify-center min-h-[120px] items-center">
-              {cardsByPlayer['Bot_3']?.map(c => (
-                <PlayingCard key={c.id} card={c} size="sm" />
-              ))}
-            </div>
-          </div>
-
-          {/* Human User */}
-          <div className="p-4 rounded-xl border flex flex-col items-center"
-            style={{ background: 'rgba(212,175,55,0.05)', border: '1px solid rgba(212,175,55,0.25)' }}>
-            <span className="text-xs font-bold text-gold-gradient mb-3">Seat 1 (You)</span>
-            <div className="flex gap-1 flex-wrap justify-center min-h-[120px] items-center">
-              {cardsByPlayer[userId]?.map(c => (
-                <PlayingCard key={c.id} card={c} size="sm" />
-              ))}
-            </div>
-          </div>
+          {playersBySeat.map(player => {
+            const isMe = player.id === userId;
+            return (
+              <div key={player.id} className="p-4 rounded-xl border flex flex-col items-center"
+                style={isMe
+                  ? { background: 'rgba(212,175,55,0.05)', border: '1px solid rgba(212,175,55,0.25)' }
+                  : { background: 'rgba(0,0,0,0.3)', border: '1px solid rgba(212,175,55,0.08)' }}>
+                <span className={`text-xs font-bold mb-3 ${isMe ? 'text-gold-gradient' : 'text-emerald-400'}`}>
+                  Seat {player.seat} ({isMe ? 'You' : seatLabel(player.seat)})
+                </span>
+                <div className="flex gap-1 flex-wrap justify-center min-h-[120px] items-center">
+                  {cardsByPlayer[player.id]?.map(c => (
+                    <PlayingCard key={c.id} card={c} size="sm" />
+                  ))}
+                </div>
+              </div>
+            );
+          })}
         </div>
 
         {/* Dynamic Rules Tip Box */}
         <div className="text-left p-4 rounded-xl text-xs max-w-2xl mx-auto"
           style={{ background: 'rgba(0,0,0,0.4)', border: '1px solid rgba(212,175,55,0.1)' }}>
           <div className="font-semibold text-gold-gradient mb-1">✦ Current Rules context:</div>
-          <span style={{ color: 'rgba(245,240,232,0.65)' }}>
+          <span style={{ color: 'rgba(var(--text-rgb),0.65)' }}>
             Seep is played in partnerships. Seat 1 (You) and Seat 3 (Partner) form Team 1, and Seat 2 & Seat 4 form Team 2.
             The Jack Toss winner is rotated to Seat 1 for the game, earning the bidding dealer seat.
           </span>

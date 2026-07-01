@@ -1,4 +1,6 @@
 import pg from 'pg';
+import bcrypt from 'bcryptjs';
+import { randomUUID } from 'crypto';
 
 const connectionString = process.env.DATABASE_URL || 'postgres://seep_user:seep_pass@localhost:5432/seep_db';
 
@@ -149,4 +151,32 @@ export async function initDatabase() {
   } finally {
     client.release();
   }
+}
+
+// Seed a pre-configured admin account from env vars, if it doesn't already exist.
+// Lets operators bootstrap the first admin without relying on any in-app self-promotion.
+export async function seedAdminUser() {
+  const username = process.env.ADMIN_USERNAME;
+  const password = process.env.ADMIN_PASSWORD;
+  if (!username || !password) {
+    console.log('[seed] ADMIN_USERNAME/ADMIN_PASSWORD not set — skipping admin seed.');
+    return;
+  }
+
+  const existing = await pool.query('SELECT id, role FROM users WHERE username = $1', [username]);
+  if (existing.rows.length > 0) {
+    if (existing.rows[0].role !== 'admin') {
+      await pool.query('UPDATE users SET role = $1 WHERE id = $2', ['admin', existing.rows[0].id]);
+      console.log(`[seed] Promoted existing user "${username}" to admin.`);
+    }
+    return;
+  }
+
+  const id = randomUUID();
+  const passwordHash = await bcrypt.hash(password, 10);
+  await pool.query(
+    'INSERT INTO users (id, username, password_hash, role) VALUES ($1, $2, $3, $4)',
+    [id, username, passwordHash, 'admin']
+  );
+  console.log(`[seed] Created admin account "${username}".`);
 }

@@ -6,7 +6,7 @@ import dotenv from 'dotenv';
 import { randomBytes } from 'crypto';
 import authRoutes from './auth/routes.js';
 import { generateToken, verifyToken, hasPermission } from './auth/jwt.js';
-import { initDatabase, pool } from './db.js';
+import { initDatabase, seedAdminUser, pool } from './db.js';
 import { chooseBestBotMove } from './bot.js';
 
 // Game types
@@ -486,10 +486,13 @@ async function checkRoundEnd(lobby: LobbyState) {
     winningTeam,
   };
 
+  console.log(`[ROUND END] Lobby ${lobby.code}: round ${lobby.gameState.roundNumber} — cards ${t1CardPts}-${t2CardPts}, seeps net ${netT1Seeps}-${netT2Seeps}, round score ${t1RoundScore}-${t2RoundScore}, totals ${lobby.gameState.teamScores.team1}-${lobby.gameState.teamScores.team2}`);
+
   // Game over?
   if (lobby.gameState.teamScores.team1 >= 100 || lobby.gameState.teamScores.team2 >= 100) {
     lobby.gameState.gamePhase = 'gameEnd';
     await saveLobby(lobby);
+    console.log(`[GAME END] Lobby ${lobby.code}: final score ${lobby.gameState.teamScores.team1}-${lobby.gameState.teamScores.team2}`);
     io.to(lobby.code).emit('game-state', lobby.gameState);
     return;
   }
@@ -529,7 +532,7 @@ async function startNextRound(lobbyCode: string, dealerPlayerIndex: number) {
     await client.query('DELETE FROM lobby_players WHERE lobby_code = $1', [lobbyCode]);
     for (let i = 0; i < rotated.length; i++) {
       const p = rotated[i];
-      const team = (i === 0 || i === 2) ? 1 : 2;
+      const team = p.team ?? ((i === 0 || i === 2) ? 1 : 2);
       await client.query(
         'INSERT INTO lobby_players (lobby_code, user_id, socket_id, team, seat) VALUES ($1, $2, $3, $4, $5)',
         [lobbyCode, p.id, p.socketId, team, i + 1]
@@ -587,7 +590,6 @@ async function startNextRound(lobbyCode: string, dealerPlayerIndex: number) {
     io.to(lobbyCode).emit('game-state', lobby.gameState);
     const faceDownFloor = floorCards.map(c => ({ ...c, faceDown: true }));
     lobby.players.forEach((p, i) => {
-      const visibleHand = i === 3 ? [...hand0, ...hand1, ...hand2, ...hand3].slice(i * 4, i * 4 + (i === 3 ? 12 : 4)) : [hand0, hand1, hand2, hand3][i];
       io.to(p.socketId).emit('deal-cards', {
         lobbyCode,
         floor: faceDownFloor,
@@ -804,6 +806,7 @@ async function checkAndTriggerBotTurn(lobbyCode: string) {
             if (currentLobby.gameState.seepCount[team] >= 3) {
               currentLobby.gameState.seepCount[team] = 0;
             }
+            console.log(`[SEEP] Lobby ${currentLobby.code}: ${currentPlayer.id} (team ${currentPlayer.team}) cleared the table`);
             io.to(currentLobby.code).emit('seep-executed', { playerId: currentPlayer.id });
           }
         } else if (playAction === 'BUILD_HOUSE') {
@@ -1090,6 +1093,7 @@ io.on('connection', (socket: Socket) => {
       await client.query('COMMIT');
 
       socket.join(code);
+      console.log(`[LOBBY CREATED] ${code} by ${userId} (private: ${!!isPrivate})`);
       socket.emit('lobby-created', { code, isPrivate });
       socket.emit('lobby-state', { players: [userId] });
     } catch (err) {
@@ -1166,6 +1170,7 @@ io.on('connection', (socket: Socket) => {
       await client.query('COMMIT');
 
       socket.join(lobbyCode);
+      console.log(`[LOBBY JOINED] ${lobbyCode}: ${userId} took seat ${seat} (team ${team})`);
 
       // Load updated lobby to broadcast state
       const updatedLobby = await loadLobby(lobbyCode);
@@ -1434,12 +1439,13 @@ io.on('connection', (socket: Socket) => {
           await client.query('DELETE FROM lobby_players WHERE lobby_code = $1', [lobbyCode]);
           for (let i = 0; i < rotatedPlayers.length; i++) {
             const p = rotatedPlayers[i];
-            const team = (i === 0 || i === 2) ? 1 : 2;
+            const team = p.team ?? ((i === 0 || i === 2) ? 1 : 2);
             await client.query(
               'INSERT INTO lobby_players (lobby_code, user_id, socket_id, team, seat) VALUES ($1, $2, $3, $4, $5)',
               [lobbyCode, p.id, p.socketId, team, i + 1]
             );
             p.team = team;
+            p.seat = i + 1;
           }
           lobby.players = rotatedPlayers;
         }
@@ -1564,6 +1570,7 @@ io.on('connection', (socket: Socket) => {
       await saveLobby(lobby, client);
       await client.query('COMMIT');
 
+      console.log(`[BID PLACED] Lobby ${lobbyCode}: ${playerId} called ${bid} with ${bidCard.rank}${bidCard.suit}`);
       io.to(lobbyCode).emit('bid-placed', { bid, playerId });
       io.to(lobbyCode).emit('game-state', lobby.gameState);
 
@@ -1804,6 +1811,16 @@ io.on('connection', (socket: Socket) => {
         return;
       }
 
+      // Drop any client-supplied target cards that don't actually exist on the
+      // floor or in an active house — otherwise a client could fabricate cards
+      // that happen to sum correctly and capture points that were never on the table.
+      const realCardIds = new Set<string>([
+        ...lobby.gameState.floor.map(c => c.id),
+        ...lobby.gameState.houses.flatMap(h => h.cards.map(c => c.id)),
+      ]);
+      targetCards = targetCards.filter(tc => realCardIds.has(tc.id));
+      payload.targetCards = targetCards;
+
       // Restriction: Restrict caller's first action to the called house value
       const isCallerFirstTurn = (playerIndex === 0 && !lobby.gameState.firstTurnCompleted.includes(playerId));
       if (isCallerFirstTurn) {
@@ -1973,6 +1990,7 @@ io.on('connection', (socket: Socket) => {
           if (lobby.gameState.seepCount[team] >= 3) {
             lobby.gameState.seepCount[team] = 0;
           }
+          console.log(`[SEEP] Lobby ${lobbyCode}: ${playerId} (team ${currentPlayer.team}) cleared the table`);
           io.to(lobbyCode).emit('seep-executed', { playerId });
         }
 
@@ -2224,7 +2242,7 @@ app.get('/health', (_req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-initDatabase().then(() => {
+initDatabase().then(() => seedAdminUser()).then(() => {
   server.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
   });

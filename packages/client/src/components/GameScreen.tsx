@@ -1,13 +1,14 @@
 import { useState, useEffect, useRef } from 'react';
 import { Socket } from 'socket.io-client';
 import { motion, AnimatePresence } from 'motion/react';
-import type { Card, GameState, House } from '../types';
+import type { Card, GamePlayer, GameState, House } from '../types';
 import PlayerHand from './PlayerHand';
 import FloorCards from './FloorCards';
 import Scoreboard from './Scoreboard';
 import BiddingPhase from './BiddingPhase';
 import TossPhase from './TossPhase';
 import PlayingCard from './PlayingCard';
+import ThemeToggle from './ThemeToggle';
 
 interface GameScreenProps {
   socket: Socket;
@@ -98,6 +99,16 @@ const suitSymbol = (suit: string) => {
   return '♠';
 };
 
+function getHouseTeams(house: House, players: GamePlayer[]): (1 | 2)[] {
+  const contributors = house.contributors && house.contributors.length > 0 ? house.contributors : [house.createdBy];
+  const teams = new Set<1 | 2>();
+  contributors.forEach(pid => {
+    const p = players.find(pl => pl.id === pid);
+    if (p?.team === 1 || p?.team === 2) teams.add(p.team);
+  });
+  return [...teams].sort();
+}
+
 export default function GameScreen({
   socket,
   userId,
@@ -122,6 +133,7 @@ export default function GameScreen({
   const [lastMoveVisual, setLastMoveVisual] = useState<any | null>(null);
   const [houseActionPrompt, setHouseActionPrompt] = useState<{ card: Card; house: House; floorCards: Card[] } | null>(null);
   const [adminShowHouseCards, setAdminShowHouseCards] = useState(true);
+  const [houseDetailModal, setHouseDetailModal] = useState<House | null>(null);
 
   const playersRef = useRef(gameState?.players);
   useEffect(() => {
@@ -405,7 +417,7 @@ export default function GameScreen({
         >
           <div className="text-4xl mb-3">🃏</div>
           <h2 className="font-display text-lg font-bold text-gold-gradient mb-2">Dealer Verification</h2>
-          <p className="text-xs mb-6 leading-relaxed" style={{ color: 'rgba(245,240,232,0.7)' }}>
+          <p className="text-xs mb-6 leading-relaxed" style={{ color: 'rgba(var(--text-rgb),0.7)' }}>
             The dealer asks: Do you have at least one card above 8 (9, 10, J, Q, K) in your initial 4 cards?
           </p>
 
@@ -436,7 +448,7 @@ export default function GameScreen({
           ) : (
             <div className="flex flex-col items-center py-4">
               <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-gold mb-3" />
-              <p className="text-xs" style={{ color: 'rgba(245,240,232,0.5)' }}>
+              <p className="text-xs" style={{ color: 'rgba(var(--text-rgb),0.5)' }}>
                 Waiting for the caller ({gameState.players[0]?.username}) to reply to the dealer...
               </p>
             </div>
@@ -525,11 +537,14 @@ export default function GameScreen({
             className="absolute top-28 left-4 z-40 p-4 rounded-xl border w-60 text-left shadow-2xl"
             style={{ background: 'rgba(9,18,11,0.95)', borderColor: 'rgba(212,175,55,0.25)' }}
           >
-            <div className="mb-2">
-              <h3 className="font-display font-bold text-gold-gradient text-sm">{username}</h3>
-              <p className="text-[10px] uppercase tracking-wider" style={{ color: 'rgba(245,240,232,0.4)' }}>
-                {role} • Team {(gameState?.players.find(p => p.id === userId)?.team) || 1}
-              </p>
+            <div className="mb-2 flex items-center justify-between">
+              <div>
+                <h3 className="font-display font-bold text-gold-gradient text-sm">{username}</h3>
+                <p className="text-[10px] uppercase tracking-wider" style={{ color: 'rgba(var(--text-rgb),0.4)' }}>
+                  {role} • Team {(gameState?.players.find(p => p.id === userId)?.team) || 1}
+                </p>
+              </div>
+              <ThemeToggle />
             </div>
              <div className="divider-gold opacity-20 my-2" />
             {role === 'admin' && (
@@ -610,7 +625,7 @@ export default function GameScreen({
             </button>
           </div>
           {showGuide && (
-            <div className="text-[11px] leading-relaxed flex flex-col gap-2" style={{ color: 'rgba(245,240,232,0.75)' }}>
+            <div className="text-[11px] leading-relaxed flex flex-col gap-2" style={{ color: 'rgba(var(--text-rgb),0.75)' }}>
               <div className="divider-gold opacity-30" style={{ margin: '4px 0' }} />
               {gameState?.gamePhase === 'playing' && (
                 <>
@@ -734,7 +749,7 @@ export default function GameScreen({
             </div>
           ) : (gameState?.houses?.length ?? 0) === 0 ? (
             <div className="flex flex-col items-center">
-              <p className="text-sm font-display" style={{ color: 'rgba(245,240,232,0.3)' }}>Table is empty</p>
+              <p className="text-sm font-display" style={{ color: 'rgba(var(--text-rgb),0.3)' }}>Table is empty</p>
             </div>
           ) : null}
 
@@ -746,6 +761,8 @@ export default function GameScreen({
                 {gameState.houses.map(house => {
                   const isSelected = capturedCards.some(cc => house.cards.some(hc => hc.id === cc.id));
                   const groups = groupHouseCards(house.cards, house.value);
+                  const houseTeams = getHouseTeams(house, gameState.players);
+                  const canViewStack = role === 'admin' && adminShowHouseCards;
                   return (
                     <motion.div
                       key={house.id}
@@ -764,6 +781,37 @@ export default function GameScreen({
                       }`}>
                         {house.isPukta ? '🏆' : '🏠'} House {house.value}
                       </div>
+
+                      {/* Contributor team badge(s) */}
+                      {houseTeams.length > 0 && (
+                        <div className="flex gap-1 mt-4 mb-0.5">
+                          {houseTeams.map(t => (
+                            <span
+                              key={t}
+                              className="px-1.5 py-0.5 rounded-full text-[8px] font-bold uppercase tracking-wide"
+                              style={{
+                                background: t === 1 ? 'rgba(74,222,128,0.15)' : 'rgba(96,165,250,0.15)',
+                                color: t === 1 ? '#4ade80' : '#60a5fa',
+                                border: `1px solid ${t === 1 ? 'rgba(74,222,128,0.35)' : 'rgba(96,165,250,0.35)'}`,
+                              }}
+                            >
+                              {t === 1 ? teamNames.team1 : teamNames.team2}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Admin: view stack order */}
+                      {canViewStack && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); setHouseDetailModal(house); }}
+                          className="absolute -top-3 -right-2 w-5 h-5 rounded-full flex items-center justify-center text-[10px] bg-black/60 border border-gold/40 text-gold-500 hover:bg-black/80"
+                          style={{ minHeight: 'auto', minWidth: 'auto' }}
+                          title="View stack order"
+                        >
+                          🔍
+                        </button>
+                      )}
 
                       {/* Stack of Cards grouped together */}
                       {role === 'admin' && adminShowHouseCards ? (
@@ -950,15 +998,15 @@ export default function GameScreen({
                 <div className="font-bold font-display text-gold-gradient text-center">{teamNames.team1}</div>
                 <div className="font-bold font-display text-gold-gradient text-center">{teamNames.team2}</div>
 
-                <div className="text-left" style={{ color: 'rgba(245,240,232,0.5)' }}>Card pts</div>
+                <div className="text-left" style={{ color: 'rgba(var(--text-rgb),0.5)' }}>Card pts</div>
                 <div className="text-center font-mono">{gameState.roundSummary.team1CardPoints}</div>
                 <div className="text-center font-mono">{gameState.roundSummary.team2CardPoints}</div>
 
-                <div className="text-left" style={{ color: 'rgba(245,240,232,0.5)' }}>Net seeps</div>
+                <div className="text-left" style={{ color: 'rgba(var(--text-rgb),0.5)' }}>Net seeps</div>
                 <div className="text-center font-mono">{gameState.roundSummary.team1SeepsNet > 0 ? `+${gameState.roundSummary.team1SeepsNet} 🌊` : '—'}</div>
                 <div className="text-center font-mono">{gameState.roundSummary.team2SeepsNet > 0 ? `+${gameState.roundSummary.team2SeepsNet} 🌊` : '—'}</div>
 
-                <div className="text-left border-t border-gold/20 pt-1" style={{ color: 'rgba(245,240,232,0.5)' }}>Round Δ</div>
+                <div className="text-left border-t border-gold/20 pt-1" style={{ color: 'rgba(var(--text-rgb),0.5)' }}>Round Δ</div>
                 <div className={`text-center font-mono font-bold border-t border-gold/20 pt-1 ${gameState.roundSummary.team1RoundScore > 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
                   {gameState.roundSummary.team1RoundScore > 0 ? `+${gameState.roundSummary.team1RoundScore}` : gameState.roundSummary.team1RoundScore}
                 </div>
@@ -966,7 +1014,7 @@ export default function GameScreen({
                   {gameState.roundSummary.team2RoundScore > 0 ? `+${gameState.roundSummary.team2RoundScore}` : gameState.roundSummary.team2RoundScore}
                 </div>
 
-                <div className="text-left border-t border-gold/20 pt-2 mt-1" style={{ color: 'rgba(245,240,232,0.5)' }}>Total</div>
+                <div className="text-left border-t border-gold/20 pt-2 mt-1" style={{ color: 'rgba(var(--text-rgb),0.5)' }}>Total</div>
                 <div className="text-center font-mono font-bold text-gold-gradient border-t border-gold/20 pt-2 mt-1 text-base">{gameState.teamScores.team1}</div>
                 <div className="text-center font-mono font-bold text-gold-gradient border-t border-gold/20 pt-2 mt-1 text-base">{gameState.teamScores.team2}</div>
               </div>
@@ -980,7 +1028,7 @@ export default function GameScreen({
                 return (
                   <div>
                     <div className="divider-gold opacity-20 my-4" />
-                    <p className="text-xs mb-3" style={{ color: 'rgba(245,240,232,0.5)' }}>
+                    <p className="text-xs mb-3" style={{ color: 'rgba(var(--text-rgb),0.5)' }}>
                       <span className="font-bold" style={{ color: 'rgba(212,175,55,0.8)' }}>
                         {selTeam === 1 ? teamNames.team1 : teamNames.team2}
                       </span>{' '}lost — choose the next dealer:
@@ -1002,7 +1050,7 @@ export default function GameScreen({
                       ))}
                     </div>
                     {!canPick && (
-                      <p className="text-[10px] mt-3 italic" style={{ color: 'rgba(245,240,232,0.3)' }}>
+                      <p className="text-[10px] mt-3 italic" style={{ color: 'rgba(var(--text-rgb),0.3)' }}>
                         Waiting for {selTeam === 1 ? teamNames.team1 : teamNames.team2} to pick a dealer…
                       </p>
                     )}
@@ -1041,12 +1089,12 @@ export default function GameScreen({
               <div className="flex justify-center gap-8 mt-6 mb-8">
                 <div>
                   <div className="text-2xl font-bold font-mono text-gold-gradient">{gameState.teamScores.team1}</div>
-                  <div className="text-xs mt-1" style={{ color: 'rgba(245,240,232,0.4)' }}>{teamNames.team1}</div>
+                  <div className="text-xs mt-1" style={{ color: 'rgba(var(--text-rgb),0.4)' }}>{teamNames.team1}</div>
                 </div>
                 <div className="w-px bg-gold/20" />
                 <div>
                   <div className="text-2xl font-bold font-mono text-gold-gradient">{gameState.teamScores.team2}</div>
-                  <div className="text-xs mt-1" style={{ color: 'rgba(245,240,232,0.4)' }}>{teamNames.team2}</div>
+                  <div className="text-xs mt-1" style={{ color: 'rgba(var(--text-rgb),0.4)' }}>{teamNames.team2}</div>
                 </div>
               </div>
               <button onClick={onLeaveGame} className="btn-gold px-8 py-3 rounded-xl text-sm font-bold font-display uppercase tracking-widest">
@@ -1103,6 +1151,59 @@ export default function GameScreen({
                   Cancel
                 </button>
               </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ─── ADMIN: HOUSE STACK ORDER MODAL ─── */}
+      <AnimatePresence>
+        {houseDetailModal && (
+          <motion.div
+            key="house-detail-modal"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => setHouseDetailModal(null)}
+            className="absolute inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-md"
+          >
+            <motion.div
+              onClick={(e) => e.stopPropagation()}
+              initial={{ scale: 0.9, y: 20 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.9, y: 20 }}
+              className="glass-panel rounded-2xl p-6 w-full max-w-sm text-center flex flex-col items-center border border-gold/30"
+              style={{ background: 'rgba(9,22,12,0.98)' }}
+            >
+              <h3 className="text-lg font-display font-bold text-gold-gradient mb-1">
+                House {houseDetailModal.value} — Stack Order
+              </h3>
+              <p className="text-[10px] uppercase tracking-widest mb-5" style={{ color: 'rgba(var(--text-rgb),0.4)' }}>
+                Bottom of stack first, in build order
+              </p>
+
+              <div className="flex flex-col gap-2 w-full max-h-72 overflow-y-auto pr-1">
+                {houseDetailModal.cards.map((c, i) => (
+                  <div
+                    key={c.id}
+                    className="flex items-center gap-3 px-3 py-2 rounded-lg"
+                    style={{ background: 'rgba(0,0,0,0.3)', border: '1px solid rgba(212,175,55,0.15)' }}
+                  >
+                    <span className="text-[10px] font-mono text-gold-500 w-5 text-right">{i + 1}</span>
+                    <PlayingCard card={c} size="sm" />
+                    <span className="text-xs font-display" style={{ color: 'rgba(var(--text-rgb),0.7)' }}>
+                      {c.rank}{suitSymbol(c.suit)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+
+              <button
+                onClick={() => setHouseDetailModal(null)}
+                className="btn-gold w-full py-3 rounded-xl text-xs tracking-widest uppercase mt-5"
+              >
+                Close
+              </button>
             </motion.div>
           </motion.div>
         )}

@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
+import ThemeToggle from './ThemeToggle';
 
 interface LoginScreenProps {
   onLogin: (userId: string, token: string, username: string, role: string) => void;
@@ -48,6 +49,10 @@ export default function LoginScreen({ onLogin }: LoginScreenProps) {
 
   return (
     <div className="relative min-h-screen flex items-center justify-center p-4 overflow-hidden">
+      <div className="absolute top-4 right-4 z-20">
+        <ThemeToggle />
+      </div>
+
       {/* Animated background orbs */}
       <div className="absolute inset-0 overflow-hidden pointer-events-none">
         <div className="absolute -top-40 -left-40 w-96 h-96 rounded-full"
@@ -177,7 +182,7 @@ export default function LoginScreen({ onLogin }: LoginScreenProps) {
 
             {/* Divider */}
             <div className="my-6 divider-gold" />
-            <p className="text-center text-xs" style={{ color: 'rgba(245,240,232,0.3)' }}>
+            <p className="text-center text-xs" style={{ color: 'rgba(var(--text-rgb),0.3)' }}>
               {isRegistering
                 ? 'Joining as a new player. Enjoy the game!'
                 : 'New to Seep? Switch to Register above.'}

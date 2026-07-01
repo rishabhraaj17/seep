@@ -17,6 +17,7 @@ export interface House {
   value: 9 | 10 | 11 | 12 | 13 | 14;
   isPukta: boolean;
   createdBy: string;
+  contributors?: string[];
 }
 
 export type FloorCard = Card & { isLoose?: boolean; houseId?: string };

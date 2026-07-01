@@ -30,6 +30,7 @@ router.post('/register', async (req, res) => {
     );
 
     const token = generateToken({ userId: id, username, role });
+    console.log(`[AUTH] Registered new user "${username}" (role: ${role})`);
     res.json({ token, user: { id, username, role } });
   } catch (err) {
     console.error(err);
@@ -50,10 +51,12 @@ router.post('/login', async (req, res) => {
     const user = result.rows[0];
     const validPassword = await bcrypt.compare(password, user.password_hash);
     if (!validPassword) {
+      console.warn(`[AUTH] Failed login attempt for "${username}"`);
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
     const token = generateToken({ userId: user.id, username: user.username, role: user.role });
+    console.log(`[AUTH] "${username}" logged in (role: ${user.role})`);
     res.json({ token, user: { id: user.id, username: user.username, role: user.role } });
   } catch (err) {
     console.error(err);
@@ -120,13 +123,8 @@ router.post('/change-role', async (req, res) => {
     return res.status(400).json({ error: 'Invalid role' });
   }
 
-  // RBAC validation: Only admins can change other people's roles.
-  // Anyone can change their own role (Allows self-promotion for testing/dev environments).
-  // WARNING: This backdoor should be disabled or gated behind environment checks in production!
-  const isSelf = payload.username === username;
-  const isAdmin = payload.role === 'admin';
-
-  if (!isSelf && !isAdmin) {
+  // RBAC: only admins can change roles — including their own.
+  if (payload.role !== 'admin') {
     return res.status(403).json({ error: 'Forbidden' });
   }
 
@@ -138,9 +136,10 @@ router.post('/change-role', async (req, res) => {
 
     const user = userRes.rows[0];
     await pool.query('UPDATE users SET role = $1 WHERE id = $2', [role, user.id]);
+    console.log(`[AUTH] Admin "${payload.username}" set "${username}"'s role to ${role}`);
 
     let newToken = undefined;
-    if (isSelf) {
+    if (payload.username === username) {
       newToken = generateToken({ userId: user.id, username: user.username, role });
     }
 
