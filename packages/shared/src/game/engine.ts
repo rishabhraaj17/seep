@@ -119,6 +119,7 @@ export function buildHouse(
     value: houseValue,
     isPukta: false,
     createdBy: playerId,
+    contributors: [playerId],
   };
 }
 

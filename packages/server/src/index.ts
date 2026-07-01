@@ -26,6 +26,7 @@ interface House {
   value: 9 | 10 | 11 | 12 | 13 | 14;
   isPukta: boolean;
   createdBy: string;
+  contributors?: string[];
 }
 
 interface RoundSummary {
@@ -204,7 +205,18 @@ function dealRemainingCardsIfFirstTurn(lobby: LobbyState, playerId: string, play
     }
   }
 }
-
+function getHouseContributedTeams(house: House, players: { id: string; team: number; }[]): { team1: boolean; team2: boolean } {
+  const result = { team1: false, team2: false };
+  const contributors = house.contributors || [house.createdBy];
+  for (const pid of contributors) {
+    const p = players.find(player => player.id === pid);
+    if (p) {
+      if (p.team === 1) result.team1 = true;
+      if (p.team === 2) result.team2 = true;
+    }
+  }
+  return result;
+}
 // Bot helper to find capturable cards
 function findCapturableCardsForBot(card: Card, floor: Card[]): Card[] {
   const cardValue = getCardNumericValue(card);
@@ -821,6 +833,11 @@ async function checkAndTriggerBotTurn(lobbyCode: string) {
             if (existingHouse) {
               existingHouse.cards.push(selectedCard, ...(targetCards || []));
               existingHouse.isPukta = checkIfPukta(existingHouse);
+              const contributors = existingHouse.contributors || [existingHouse.createdBy];
+              if (!contributors.includes(currentPlayer.id)) {
+                contributors.push(currentPlayer.id);
+              }
+              existingHouse.contributors = contributors;
             } else {
               const newHouse = {
                 id: `house-${Date.now()}`,
@@ -828,6 +845,7 @@ async function checkAndTriggerBotTurn(lobbyCode: string) {
                 value: houseValue as 9 | 10 | 11 | 12 | 13,
                 isPukta: houseValue >= 13,
                 createdBy: currentPlayer.id,
+                contributors: [currentPlayer.id],
               };
               currentLobby.gameState.houses.push(newHouse);
             }
@@ -846,12 +864,25 @@ async function checkAndTriggerBotTurn(lobbyCode: string) {
               if (existingHouse) {
                 existingHouse.cards.push(...targetedHouse.cards, selectedCard, ...extraTargetCards);
                 existingHouse.isPukta = checkIfPukta(existingHouse);
+                const contributors = existingHouse.contributors || [existingHouse.createdBy];
+                const oldContributors = targetedHouse.contributors || [targetedHouse.createdBy];
+                oldContributors.forEach(cid => {
+                  if (!contributors.includes(cid)) contributors.push(cid);
+                });
+                if (!contributors.includes(currentPlayer.id)) {
+                  contributors.push(currentPlayer.id);
+                }
+                existingHouse.contributors = contributors;
                 currentLobby.gameState.houses = currentLobby.gameState.houses.filter(h => h.id !== targetedHouse.id);
               } else {
                 targetedHouse.value = houseValue as 9 | 10 | 11 | 12 | 13;
                 targetedHouse.cards.push(selectedCard, ...extraTargetCards);
                 targetedHouse.createdBy = currentPlayer.id;
                 targetedHouse.isPukta = checkIfPukta(targetedHouse);
+                if (!targetedHouse.contributors) targetedHouse.contributors = [targetedHouse.createdBy];
+                if (!targetedHouse.contributors.includes(currentPlayer.id)) {
+                  targetedHouse.contributors.push(currentPlayer.id);
+                }
               }
             } else {
               const extraTargetCards = (targetCards || []).filter(tc => !targetedHouse.cards.some(hc => hc.id === tc.id));
@@ -862,6 +893,10 @@ async function checkAndTriggerBotTurn(lobbyCode: string) {
 
               targetedHouse.cards.push(selectedCard, ...extraTargetCards);
               targetedHouse.isPukta = checkIfPukta(targetedHouse);
+              if (!targetedHouse.contributors) targetedHouse.contributors = [targetedHouse.createdBy];
+              if (!targetedHouse.contributors.includes(currentPlayer.id)) {
+                targetedHouse.contributors.push(currentPlayer.id);
+              }
             }
           }
         } else {
@@ -874,6 +909,7 @@ async function checkAndTriggerBotTurn(lobbyCode: string) {
                 value: bidVal as 9 | 10 | 11 | 12 | 13,
                 isPukta: bidVal >= 13,
                 createdBy: currentPlayer.id,
+                contributors: [currentPlayer.id],
               };
               currentLobby.gameState.houses.push(newHouse);
               playAction = 'BUILD_HOUSE';
@@ -1795,13 +1831,109 @@ io.on('connection', (socket: Socket) => {
         }
       }
 
+      let isValidCapture = true;
+      let matchingHouses: House[] = [];
+      let nonMatchingHouses: House[] = [];
+
       if (actionType === 'CAPTURE') {
         const cardValue = getCardNumericValue(card);
+        matchingHouses = lobby.gameState.houses.filter(h => h.value === cardValue);
+        nonMatchingHouses = lobby.gameState.houses.filter(h => h.value !== cardValue);
 
-        // Find if there is any house of this value
-        const matchingHouses = lobby.gameState.houses.filter(h => h.value === cardValue);
-        const nonMatchingHouses = lobby.gameState.houses.filter(h => h.value !== cardValue);
-        
+        if (targetCards && targetCards.length > 0) {
+          if (!canSumTo(cardValue, targetCards)) {
+            isValidCapture = false;
+          }
+        } else if (matchingHouses.length === 0) {
+          isValidCapture = false;
+        }
+
+        if (!isValidCapture) {
+          actionType = 'THROW';
+          targetCards = [];
+        }
+      }
+
+      let isValidBuild = true;
+      let targetedHouseIndex = -1;
+      let isDistortion = false;
+      const initialHouseValue = houseValue;
+
+      if (actionType === 'BUILD_HOUSE') {
+        if (!houseValue || houseValue < 9 || houseValue > 13) {
+          isValidBuild = false;
+        } else {
+          const remainingHand = hand.filter(c => c.id !== card.id);
+          if (!remainingHand.some(c => getCardNumericValue(c) === houseValue)) {
+            isValidBuild = false;
+          } else {
+            targetedHouseIndex = lobby.gameState.houses.findIndex(h => 
+              h.cards.some(hc => (targetCards || []).some(tc => tc.id === hc.id))
+            );
+
+            if (targetedHouseIndex === -1) {
+              if (lobby.gameState.houses.length >= 2) {
+                isValidBuild = false;
+              } else {
+                if (!canPartitionIntoValue([card, ...(targetCards || [])], houseValue)) {
+                  isValidBuild = false;
+                }
+              }
+            } else {
+              const targetedHouseObj = lobby.gameState.houses[targetedHouseIndex]!;
+              isDistortion = targetedHouseObj.value !== houseValue;
+
+              if (isDistortion) {
+                if (targetedHouseObj.isPukta || targetedHouseObj.value === 13) {
+                  isValidBuild = false;
+                } else if (houseValue <= targetedHouseObj.value) {
+                  isValidBuild = false;
+                } else {
+                  const creatorIndex = lobby.players.findIndex(p => p.id === targetedHouseObj.createdBy);
+                  const playerIndex = lobby.players.findIndex(p => p.id === playerId);
+                  const creatorTeam = creatorIndex !== -1 ? lobby.players[creatorIndex]?.team : undefined;
+                  const playerTeam = playerIndex !== -1 ? lobby.players[playerIndex]?.team : undefined;
+
+                  if (creatorTeam === playerTeam) {
+                    isValidBuild = false;
+                  } else {
+                    const extraTargetCards = (targetCards || []).filter(tc => !targetedHouseObj.cards.some(hc => hc.id === tc.id));
+                    if (!canPartitionIntoValue([...targetedHouseObj.cards, card, ...extraTargetCards], houseValue)) {
+                      isValidBuild = false;
+                    }
+                  }
+                }
+              } else {
+                // Contribution
+                const creatorIndex = lobby.players.findIndex(p => p.id === targetedHouseObj.createdBy);
+                const playerIndex = lobby.players.findIndex(p => p.id === playerId);
+                const creatorTeam = creatorIndex !== -1 ? lobby.players[creatorIndex]?.team : undefined;
+                const playerTeam = playerIndex !== -1 ? lobby.players[playerIndex]?.team : undefined;
+
+                const teams = getHouseContributedTeams(targetedHouseObj, lobby.players);
+                const bothTeamsContributed = teams.team1 && teams.team2;
+
+                if (!bothTeamsContributed && creatorTeam && creatorTeam !== playerTeam) {
+                  isValidBuild = false;
+                } else {
+                  const extraTargetCards = (targetCards || []).filter(tc => !targetedHouseObj.cards.some(hc => hc.id === tc.id));
+                  if (!canPartitionIntoValue([card, ...extraTargetCards], houseValue)) {
+                    isValidBuild = false;
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        if (!isValidBuild) {
+          actionType = 'THROW';
+          targetCards = [];
+        }
+      }
+
+      if (actionType === 'CAPTURE') {
+        const cardValue = getCardNumericValue(card);
         const capturedHouseCards: Card[] = [];
         matchingHouses.forEach(h => {
           capturedHouseCards.push(...h.cards);
@@ -1809,21 +1941,9 @@ io.on('connection', (socket: Socket) => {
         lobby.gameState.houses = nonMatchingHouses;
 
         if (targetCards && targetCards.length > 0) {
-          const canCapture = canSumTo(cardValue, targetCards);
-          if (!canCapture) {
-            socket.emit('error-message', { message: 'Invalid capture — cards don\'t sum to your card value' });
-            await client.query('ROLLBACK');
-            return;
-          }
-
-          // Remove target cards from floor
           (targetCards || []).forEach((c: Card) => {
             lobby.gameState!.floor = lobby.gameState!.floor.filter(fc => fc.id !== c.id);
           });
-        } else if (matchingHouses.length === 0) {
-          socket.emit('error-message', { message: 'No cards selected to capture' });
-          await client.query('ROLLBACK');
-          return;
         }
 
         const team = currentPlayer.team === 1 ? 'team1' : 'team2';
@@ -1841,10 +1961,7 @@ io.on('connection', (socket: Socket) => {
         }
 
         lobby.hands.set(playerId, hand.filter(c => c.id !== card.id));
-
-        // Mark first turn completed and deal remaining cards
         dealRemainingCardsIfFirstTurn(lobby, playerId, playerIndex, socket);
-
         lobby.gameState.currentPlayerIndex = (lobby.gameState.currentPlayerIndex + 1) % 4;
         io.to(lobbyCode).emit('game-state', lobby.gameState);
       } else if (actionType === 'THROW') {
@@ -1858,9 +1975,9 @@ io.on('connection', (socket: Socket) => {
               value: bidVal as 9 | 10 | 11 | 12 | 13,
               isPukta: bidVal >= 13,
               createdBy: playerId,
+              contributors: [playerId],
             };
             lobby.gameState.houses.push(newHouse);
-            // Change actionType to BUILD_HOUSE so it logs and broadcasts correctly
             actionType = 'BUILD_HOUSE';
             data.action = 'BUILD_HOUSE';
           } else {
@@ -1871,165 +1988,95 @@ io.on('connection', (socket: Socket) => {
         }
 
         lobby.hands.set(playerId, hand.filter(c => c.id !== card.id));
-
-        // Mark first turn completed and deal remaining cards
         dealRemainingCardsIfFirstTurn(lobby, playerId, playerIndex, socket);
-
         lobby.gameState.currentPlayerIndex = (lobby.gameState.currentPlayerIndex + 1) % 4;
         io.to(lobbyCode).emit('game-state', lobby.gameState);
       } else if (actionType === 'BUILD_HOUSE') {
-        const houseValue = payload.houseValue as number;
-
-        if (!houseValue || houseValue < 9 || houseValue > 13) {
-          socket.emit('error-message', { message: `Houses can only be built with values 9–13 (got ${houseValue})` });
-          await client.query('ROLLBACK');
-          return;
-        }
-
-        const remainingHand = hand.filter(c => c.id !== card.id);
-        if (!remainingHand.some(c => getCardNumericValue(c) === houseValue)) {
-          socket.emit('error-message', { message: 'You must hold a card of the house value in hand to build or contribute to it' });
-          await client.query('ROLLBACK');
-          return;
-        }
-
-        const targetedHouseIndex = lobby.gameState.houses.findIndex(h => 
-          h.cards.some(hc => (targetCards || []).some(tc => tc.id === hc.id))
-        );
-
+        const houseValue = initialHouseValue as number;
         if (targetedHouseIndex === -1) {
-          if (lobby.gameState.houses.length >= 2) {
-            actionType = 'THROW';
-            lobby.gameState.floor.push(card);
+          const existingHouse = lobby.gameState.houses.find(h => h.value === houseValue);
 
-            lobby.hands.set(playerId, hand.filter(c => c.id !== card.id));
+          (targetCards || []).forEach((c: Card) => {
+            lobby.gameState!.floor = lobby.gameState!.floor.filter(fc => fc.id !== c.id);
+          });
 
-            // Mark first turn completed and deal remaining cards
-            dealRemainingCardsIfFirstTurn(lobby, playerId, playerIndex, socket);
-
-            lobby.gameState.currentPlayerIndex = (lobby.gameState.currentPlayerIndex + 1) % 4;
-            io.to(lobbyCode).emit('game-state', lobby.gameState);
-
+          if (existingHouse) {
+            existingHouse.cards.push(card, ...(targetCards || []));
+            existingHouse.isPukta = checkIfPukta(existingHouse);
+            const contributors = existingHouse.contributors || [existingHouse.createdBy];
+            if (!contributors.includes(playerId)) {
+              contributors.push(playerId);
+            }
+            existingHouse.contributors = contributors;
           } else {
-            if (!canPartitionIntoValue([card, ...(targetCards || [])], houseValue)) {
-              socket.emit('error-message', { message: `Played card and target cards cannot be grouped into layers of value ${houseValue}` });
-              await client.query('ROLLBACK');
-              return;
-            }
-
-            const existingHouse = lobby.gameState.houses.find(h => h.value === houseValue);
-
-            (targetCards || []).forEach((c: Card) => {
-              lobby.gameState!.floor = lobby.gameState!.floor.filter(fc => fc.id !== c.id);
-            });
-
-            if (existingHouse) {
-              existingHouse.cards.push(card, ...(targetCards || []));
-              existingHouse.isPukta = checkIfPukta(existingHouse);
-            } else {
-              const newHouse = {
-                id: `house-${Date.now()}`,
-                cards: [card, ...(targetCards || [])],
-                value: houseValue as 9 | 10 | 11 | 12 | 13,
-                isPukta: houseValue >= 13,
-                createdBy: playerId,
-              };
-              lobby.gameState.houses.push(newHouse);
-            }
+            const newHouse = {
+              id: `house-${Date.now()}`,
+              cards: [card, ...(targetCards || [])],
+              value: houseValue as 9 | 10 | 11 | 12 | 13,
+              isPukta: houseValue >= 13,
+              createdBy: playerId,
+              contributors: [playerId],
+            };
+            lobby.gameState.houses.push(newHouse);
           }
         } else {
-          const targetedHouse = lobby.gameState.houses[targetedHouseIndex];
-          const isDistortion = targetedHouse.value !== houseValue;
-
+          const targetedHouseObj = lobby.gameState.houses[targetedHouseIndex];
           if (isDistortion) {
-            if (targetedHouse.isPukta || targetedHouse.value === 13) {
-              socket.emit('error-message', { message: 'Cannot distort a cemented (Pukta) house or a house of value 13' });
-              await client.query('ROLLBACK');
-              return;
-            }
-
-            // Distortion only allowed to a HIGHER value
-            if (houseValue <= targetedHouse.value) {
-              socket.emit('error-message', { message: `Can only distort a house to a higher value (current: ${targetedHouse.value})` });
-              await client.query('ROLLBACK');
-              return;
-            }
-
-            const creatorIndex = lobby.players.findIndex(p => p.id === targetedHouse.createdBy);
-            const playerIndex = lobby.players.findIndex(p => p.id === playerId);
-            const creatorTeam = creatorIndex !== -1 ? lobby.players[creatorIndex]?.team : undefined;
-            const playerTeam = playerIndex !== -1 ? lobby.players[playerIndex]?.team : undefined;
-
-            if (creatorTeam === playerTeam) {
-              socket.emit('error-message', { message: 'You cannot distort a house built by your own team' });
-              await client.query('ROLLBACK');
-              return;
-            }
-
-            const extraTargetCards = (targetCards || []).filter(tc => !targetedHouse.cards.some(hc => hc.id === tc.id));
-            if (!canPartitionIntoValue([...targetedHouse.cards, card, ...extraTargetCards], houseValue)) {
-              socket.emit('error-message', { message: `Cannot distort: final house cards cannot be grouped into layers of value ${houseValue}` });
-              await client.query('ROLLBACK');
-              return;
-            }
-
-            const existingHouse = lobby.gameState.houses.find(h => h.value === houseValue && h.id !== targetedHouse.id);
+            const existingHouse = lobby.gameState.houses.find(h => h.value === houseValue && h.id !== targetedHouseObj.id);
+            const extraTargetCards = (targetCards || []).filter(tc => !targetedHouseObj.cards.some(hc => hc.id === tc.id));
 
             extraTargetCards.forEach((c: Card) => {
               lobby.gameState!.floor = lobby.gameState!.floor.filter(fc => fc.id !== c.id);
             });
 
             if (existingHouse) {
-              existingHouse.cards.push(...targetedHouse.cards, card, ...extraTargetCards);
+              existingHouse.cards.push(...targetedHouseObj.cards, card, ...extraTargetCards);
               existingHouse.isPukta = checkIfPukta(existingHouse);
-              lobby.gameState.houses = lobby.gameState.houses.filter(h => h.id !== targetedHouse.id);
+              const contributors = existingHouse.contributors || [existingHouse.createdBy];
+              const oldContributors = targetedHouseObj.contributors || [targetedHouseObj.createdBy];
+              oldContributors.forEach(cid => {
+                if (!contributors.includes(cid)) contributors.push(cid);
+              });
+              if (!contributors.includes(playerId)) {
+                contributors.push(playerId);
+              }
+              existingHouse.contributors = contributors;
+              lobby.gameState.houses = lobby.gameState.houses.filter(h => h.id !== targetedHouseObj.id);
             } else {
-              targetedHouse.value = houseValue as 9 | 10 | 11 | 12 | 13;
-              targetedHouse.cards.push(card, ...extraTargetCards);
-              targetedHouse.createdBy = playerId;
-              targetedHouse.isPukta = checkIfPukta(targetedHouse);
+              targetedHouseObj.value = houseValue as 9 | 10 | 11 | 12 | 13;
+              targetedHouseObj.cards.push(card, ...extraTargetCards);
+              targetedHouseObj.createdBy = playerId;
+              targetedHouseObj.isPukta = checkIfPukta(targetedHouseObj);
+              const contributors = targetedHouseObj.contributors || [targetedHouseObj.createdBy];
+              if (!contributors.includes(playerId)) {
+                contributors.push(playerId);
+              }
+              targetedHouseObj.contributors = contributors;
             }
-
           } else {
-            const creatorPlayer = lobby.players.find(p => p.id === targetedHouse.createdBy);
-            const playerIndex = lobby.players.findIndex(p => p.id === playerId);
-            const creatorIndex = lobby.players.findIndex(p => p.id === targetedHouse.createdBy);
-            
-            const playerTeam = lobby.players[playerIndex]?.team;
-            const creatorTeam = creatorIndex !== -1 ? lobby.players[creatorIndex]?.team : undefined;
-
-            if (creatorTeam && creatorTeam !== playerTeam) {
-              socket.emit('error-message', { message: 'Cannot contribute to opponent\'s house without distorting it' });
-              await client.query('ROLLBACK');
-              return;
-            }
-
-            const extraTargetCards = (targetCards || []).filter(tc => !targetedHouse.cards.some(hc => hc.id === tc.id));
-            if (!canPartitionIntoValue([card, ...extraTargetCards], houseValue)) {
-              socket.emit('error-message', { message: `Cannot contribute: new cards cannot be grouped into layers of value ${houseValue}` });
-              await client.query('ROLLBACK');
-              return;
-            }
-
-            targetedHouse.cards.push(card, ...extraTargetCards);
-            targetedHouse.isPukta = checkIfPukta(targetedHouse);
+            const extraTargetCards = (targetCards || []).filter(tc => !targetedHouseObj.cards.some(hc => hc.id === tc.id));
 
             extraTargetCards.forEach((c: Card) => {
               lobby.gameState!.floor = lobby.gameState!.floor.filter(fc => fc.id !== c.id);
             });
+
+            targetedHouseObj.cards.push(card, ...extraTargetCards);
+            targetedHouseObj.isPukta = checkIfPukta(targetedHouseObj);
+            const contributors = targetedHouseObj.contributors || [targetedHouseObj.createdBy];
+            if (!contributors.includes(playerId)) {
+              contributors.push(playerId);
+            }
+            targetedHouseObj.contributors = contributors;
           }
         }
 
         lobby.hands.set(playerId, hand.filter(c => c.id !== card.id));
-
-        // Mark first turn completed and deal remaining cards
         dealRemainingCardsIfFirstTurn(lobby, playerId, playerIndex, socket);
-
         lobby.gameState.currentPlayerIndex = (lobby.gameState.currentPlayerIndex + 1) % 4;
         io.to(lobbyCode).emit('game-state', lobby.gameState);
       }
 
-      await logMove(client, lobbyCode, playerId, action, card, targetCards, houseValue);
+      await logMove(client, lobbyCode, playerId, actionType, card, targetCards, houseValue);
       await saveLobby(lobby, client);
       await client.query('COMMIT');
 
@@ -2043,7 +2090,7 @@ io.on('connection', (socket: Socket) => {
       io.to(lobbyCode).emit('move-executed', {
         playerId,
         username,
-        action,
+        action: actionType,
         card,
         targetCards,
         houseValue,

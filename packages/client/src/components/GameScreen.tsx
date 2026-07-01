@@ -120,6 +120,7 @@ export default function GameScreen({
   const [showProfile, setShowProfile] = useState(false);
   const [showGuide, setShowGuide] = useState(false); // Rules hidden by default
   const [lastMoveVisual, setLastMoveVisual] = useState<any | null>(null);
+  const [houseActionPrompt, setHouseActionPrompt] = useState<{ card: Card; house: House; floorCards: Card[] } | null>(null);
 
   const playersRef = useRef(gameState?.players);
   useEffect(() => {
@@ -226,68 +227,63 @@ export default function GameScreen({
 
     socket.on('error-message', (data: { message: string }) => {
       addNotification(data.message, 'error', 4000);
+      if (lobbyCode) {
+        socket.emit('request-deal', { lobbyCode });
+      }
     });
 
     return () => {
       ['game-started', 'deal-cards', 'game-state', 'teams-updated', 'bid-placed', 'seep-executed', 'toast-message', 'move-executed', 'error-message'].forEach(e => socket.off(e));
     };
-  }, [socket, userId]); // gameState removed to prevent infinite listener re-binding / flickering!
+  }, [socket, userId, lobbyCode]); // gameState removed to prevent infinite listener re-binding / flickering!
 
-  const executeHouseAction = (playedCard: Card, targetHouse: House, floorCards: Card[]) => {
+  const performHouseAction = (actionType: 'CAPTURE' | 'CONTRIBUTE', playedCard: Card, targetHouse: House, floorCards: Card[]) => {
     if (!lobbyCode) return;
     const playedVal = getCardValue(playedCard);
-    
-    // Filter floorCards to make sure we don't duplicate any cards already in the house
     const cleanFloorCards = floorCards.filter(fc => !targetHouse.cards.some(hc => hc.id === fc.id));
     const floorSum = cleanFloorCards.reduce((sum, c) => sum + getCardValue(c), 0);
 
-    // 1. Stacking / Contribution (value remains targetHouse.value)
-    if (playedVal + floorSum === targetHouse.value) {
-      socket.emit('game-action', {
-        lobbyCode,
-        action: 'BUILD_HOUSE',
-        payload: {
-          card: playedCard,
-          targetCards: [...targetHouse.cards, ...cleanFloorCards],
-          houseValue: targetHouse.value
-        }
-      });
-      setHand(prev => prev.filter(c => c.id !== playedCard.id));
-      setSelectedCard(null); setCapturedCards([]);
-      return;
-    }
-
-    // 2. Direct Capture (if no floor cards selected and values match)
-    if (playedVal === targetHouse.value && cleanFloorCards.length === 0) {
+    if (actionType === 'CAPTURE') {
       socket.emit('game-action', {
         lobbyCode,
         action: 'CAPTURE',
         payload: { card: playedCard, targetCards: targetHouse.cards }
       });
-      setHand(prev => prev.filter(c => c.id !== playedCard.id));
-      setSelectedCard(null); setCapturedCards([]);
-      return;
-    }
+    } else {
+      // Contribution or Distortion
+      const newDistortedValue = playedVal + targetHouse.value + floorSum;
+      const isStacking = playedVal + floorSum === targetHouse.value;
 
-    // 3. Distortion (changing house value)
-    const newDistortedValue = playedVal + targetHouse.value + floorSum;
-    if (newDistortedValue <= 13) {
-      socket.emit('game-action', {
-        lobbyCode,
-        action: 'BUILD_HOUSE',
-        payload: {
-          card: playedCard,
-          targetCards: [...targetHouse.cards, ...cleanFloorCards],
-          houseValue: newDistortedValue
-        }
-      });
-      setHand(prev => prev.filter(c => c.id !== playedCard.id));
-      setSelectedCard(null); setCapturedCards([]);
-      return;
+      if (isStacking) {
+        socket.emit('game-action', {
+          lobbyCode,
+          action: 'BUILD_HOUSE',
+          payload: {
+            card: playedCard,
+            targetCards: [...targetHouse.cards, ...cleanFloorCards],
+            houseValue: targetHouse.value
+          }
+        });
+      } else {
+        socket.emit('game-action', {
+          lobbyCode,
+          action: 'BUILD_HOUSE',
+          payload: {
+            card: playedCard,
+            targetCards: [...targetHouse.cards, ...cleanFloorCards],
+            houseValue: newDistortedValue
+          }
+        });
+      }
     }
+    setHand(prev => prev.filter(c => c.id !== playedCard.id));
+    setSelectedCard(null);
+    setCapturedCards([]);
+    setHouseActionPrompt(null);
+  };
 
-    // If none match, show an error
-    showToast("Invalid move for this house", "error");
+  const executeHouseAction = (playedCard: Card, targetHouse: House, floorCards: Card[]) => {
+    setHouseActionPrompt({ card: playedCard, house: targetHouse, floorCards });
   };
 
   // Drag and Drop handlers — cap house sum at 13
@@ -707,7 +703,7 @@ export default function GameScreen({
           {/* Loose Floor Cards — only show when there are actually loose cards */}
           {(gameState?.floor?.length ?? 0) > 0 ? (
             <div className="flex flex-col items-center">
-              <span className="text-[9px] sm:text-[10px] uppercase tracking-widest text-emerald-300/30 mb-1">Loose Cards</span>
+              <span className="text-[9px] sm:text-[10px] uppercase tracking-widest text-emerald-300/30 mb-1">Open Played Cards</span>
               <FloorCards
                 cards={gameState?.floor || []}
                 highlightedIds={capturedCards.map(c => c.id)}
@@ -1027,6 +1023,57 @@ export default function GameScreen({
               <button onClick={onLeaveGame} className="btn-gold px-8 py-3 rounded-xl text-sm font-bold font-display uppercase tracking-widest">
                 Back to Lobby
               </button>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ─── EAT vs CONTRIBUTE CHOOSE PROMPT ─── */}
+      <AnimatePresence>
+        {houseActionPrompt && (
+          <motion.div
+            key="house-action-prompt"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="absolute inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-md"
+          >
+            <motion.div
+              initial={{ scale: 0.9, y: 20 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.9, y: 20 }}
+              className="glass-panel rounded-2xl p-6 w-full max-w-sm text-center flex flex-col items-center border border-gold/30"
+              style={{ background: 'rgba(9,22,12,0.98)' }}
+            >
+              <h3 className="text-lg font-display font-bold text-gold-gradient mb-2">
+                House Action Decision
+              </h3>
+              <p className="text-xs text-gray-300 mb-6 font-display">
+                Would you like to Eat (Capture) House {houseActionPrompt.house.value} or Contribute to it?
+              </p>
+
+              <div className="flex flex-col gap-3 w-full">
+                <button
+                  onClick={() => performHouseAction('CAPTURE', houseActionPrompt.card, houseActionPrompt.house, houseActionPrompt.floorCards)}
+                  className="w-full py-3 rounded-xl text-xs font-bold font-display uppercase tracking-widest btn-gold shadow-lg cursor-pointer"
+                >
+                  🍽️ Eat (Capture) House
+                </button>
+
+                <button
+                  onClick={() => performHouseAction('CONTRIBUTE', houseActionPrompt.card, houseActionPrompt.house, houseActionPrompt.floorCards)}
+                  className="w-full py-3 rounded-xl text-xs font-bold font-display uppercase tracking-widest text-emerald-100 bg-emerald-950/50 border border-emerald-800/40 hover:border-emerald-600 transition-all cursor-pointer"
+                >
+                  ➕ Contribute / Distort
+                </button>
+
+                <button
+                  onClick={() => setHouseActionPrompt(null)}
+                  className="w-full py-2.5 rounded-xl text-xs text-gray-400 hover:text-gray-200 transition-all bg-transparent border-0 mt-2 cursor-pointer"
+                >
+                  Cancel
+                </button>
+              </div>
             </motion.div>
           </motion.div>
         )}

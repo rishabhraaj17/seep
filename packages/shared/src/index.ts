@@ -27,6 +27,7 @@ export interface House {
   value: 9 | 10 | 11 | 12 | 13 | 14; // House values range from 9-14
   isPukta: boolean; // false = Kacha (loose), true = Pukta (cemented/fixed)
   createdBy: string; // player id who built it
+  contributors: string[]; // player ids who have contributed/distorted this house
 }
 
 export type FloorCard = Card & { isLoose?: boolean; houseId?: string };
